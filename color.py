@@ -2,7 +2,7 @@ from collections import namedtuple
 import jax
 import jax.numpy as jnp
 
-WhitePoint = namedtuple("WhitePoint", ["x_w", "y_w", "z_w"])
+_WhitePoint = namedtuple("WhitePoint", ["x_w", "y_w", "z_w"])
 
 # https://en.wikipedia.org/wiki/Standard_illuminant#Illuminant_series_D
 def series_D(t, y_w=1.):
@@ -15,16 +15,17 @@ def series_D(t, y_w=1.):
     else:
         raise Exception
     y = -3.000 * x ** 2 + 2.870 * x - 0.275
-    return WhitePoint(y_w / y * x, y_w, y_w / y * (1 - x - y))
+    return _WhitePoint(y_w / y * x, y_w, y_w / y * (1 - x - y))
 
-# Noon light
-WhitePoint.D65 = series_D(6_500)
-WhitePoint.D65_2DEG  = WhitePoint(0.95047, 1., 1.08883)
-WhitePoint.D65_10DEG = WhitePoint(0.94811, 1., 1.07304)
-# Horizon light
-WhitePoint.D50 = series_D(5_000)
+class WhitePoint(_WhitePoint):
+    # Noon light
+    D65 = series_D(6_500)
+    D65_2DEG  = _WhitePoint(0.95047, 1., 1.08883)
+    D65_10DEG = _WhitePoint(0.94811, 1., 1.07304)
+    # Horizon light
+    D50 = series_D(5_000)
 
-ColorSpec = namedtuple("ColorSpec", [
+_ColorSpec = namedtuple("ColorSpec", [
         "gamma", "x_r", "y_r", "x_g", "y_g", "x_b", "y_b"])
 
 class Gamma:
@@ -40,8 +41,9 @@ class Gamma:
                 [v / self.phi, ((v + self.a) / (1 + self.a)) ** self.gamma])
 
 # http://www.brucelindbloom.com/WorkingSpaceInfo.html#Specifications
-ColorSpec.S_RGB = ColorSpec(
-        Gamma(2.4, 0.055), 0.6400, 0.3300, 0.3000, 0.6000, 0.1500, 0.0600)
+class ColorSpec(_ColorSpec):
+    S_RGB = _ColorSpec(
+            Gamma(2.4, 0.055), 0.6400, 0.3300, 0.3000, 0.6000, 0.1500, 0.0600)
 
 # https://www.researchgate.net/publication/318152296
 M_16 = jnp.asarray([[ 0.401288, 0.650173, -0.051461],
@@ -51,10 +53,11 @@ M_16 = jnp.asarray([[ 0.401288, 0.650173, -0.051461],
 M_AB = jnp.asarray([[1,      -12. / 11,  1. / 11],
                     [1. / 9,  1.  / 9,  -2. / 9 ]])
 
-CIECAM02Surround = namedtuple("CIECAM02Surround", ["f", "c", "n_c"])
-CIECAM02Surround.AVERAGE = CIECAM02Surround(1.0, 0.69,  1.0)
-CIECAM02Surround.DIM     = CIECAM02Surround(0.9, 0.59,  0.9)
-CIECAM02Surround.DARK    = CIECAM02Surround(0.8, 0.525, 0.8)
+_CIECAM02Surround = namedtuple("CIECAM02Surround", ["f", "c", "n_c"])
+class CIECAM02Surround:
+    AVERAGE = _CIECAM02Surround(1.0, 0.69,  1.0)
+    DIM     = _CIECAM02Surround(0.9, 0.59,  0.9)
+    DARK    = _CIECAM02Surround(0.8, 0.525, 0.8)
 
 h_i = jnp.asarray([20.14,  90.00, 164.25, 237.53, 380.14]) * jnp.pi / 180.
 e_i = jnp.asarray([ 0.8,    0.7,    1.0,    1.2,    0.8])
@@ -148,36 +151,41 @@ class ViewingConditions:
 
         return JChQMsH(j, c, h_rad * 180 / jnp.pi, q, m, s, h, h_rad)
 
-    # d rgb (axis 0) / d jch (axis 1)
-    # TODO: jax.jacobian instead?
-    _partial = None
-    @property
-    def partial(self):
-        if self._partial is None:
-            def closure(var):
-                def getter(rgb):
-                    assert rgb.size == 3
-                    return getattr(self.cam16(rgb), var)[0]
-                return jax.grad(getter)
-            partials = tuple(map(closure, ("j", "c", "h")))
-            def mapping(rgb):
-                return jnp.concat([i(rgb) for i in partials], axis=1)
-            self._partial = mapping
-        return self._partial
-
-    def ucs(self, jch):
+    def ucs(self, rgb):
+        jch = self.cam16(rgb)
         j = 1.7 * jch.j / (1 + 0.007 * jch.j)
         m = jnp.log(1 + 0.0228 * jch.m) / 0.0228
         a = m * jnp.cos(jch.h_)
         b = m * jnp.sin(jch.h_)
         return Jab(j, a, b)
 
+    op = lambda self, rgb: jnp.asarray(self.ucs(rgb))
+
+    def projected(self, rgb):
+        oob = jnp.any((rgb < 0) + (rgb > 1), axis=0)
+        clipped = jnp.clip(rgb, 0, 1)
+        res = self.op(clipped)
+        delta = clipped - rgb
+        eps = 0 # vectorize jacobian along axis 1; no cross terms; nx3x3ish
+        return res + jnp.select([oob, True], [eps, 0])
+
+    def broadcast(self, rgb, axis, f="projected"):
+        # transforms are channel first since that's how the paper organized them
+        assert rgb.shape[axis] == 3
+        _f = getattr(self, f) if isinstance(f, str) else f
+        axis = rgb.ndim + axis if axis < 0 else axis
+        before, after = list(range(axis)), list(range(axis + 1, rgb.ndim))
+        shuffled = rgb.transpose([axis] + before + after)
+        res = _f(shuffled.reshape((3, -1)))
+        shaped = res.reshape(shuffled.shape)
+        return shaped.transpose(list(range(1, axis + 1)) + [0] + after)
+
     def delta(self, jab0, jab1):
         x, y = map(jnp.asarray, (jab0, jab1))
         eprime = jnp.sqrt(jnp.sum((x - y) ** 2))
         return 1.41 * eprime ** 0.63
 
-    def bound(self, rgb):
-        oob = jnp.any((rgb < 0) + (rgb > 1), axis=0)
-        clipped = jnp.clip(rgb, 0, 1)
-
+if __name__ == "__main__":
+    vc = ViewingConditions()
+    rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3], [-0.2, 0.4, 0.3]])
+    print(vc.broadcast(rgb, -1))
