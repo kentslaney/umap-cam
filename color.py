@@ -1,6 +1,7 @@
 from collections import namedtuple
 import jax
 import jax.numpy as jnp
+from jax.experimental import checkify
 
 _WhitePoint = namedtuple("WhitePoint", ["x_w", "y_w", "z_w"])
 
@@ -121,7 +122,12 @@ class ViewingConditions:
         return self._m_rgb_xyz
 
     def cam16(self, rgb):
-        assert rgb.ndim == 2 and rgb.shape[0] == 3
+        checkify.check(
+                rgb.ndim == 2,
+                "expected non-channel dimensions to be flattened")
+        checkify.check(
+                rgb.shape[0] == 3,
+                "expected RGB channels along axis 0")
         cones = M_16 @ self.m_rgb_xyz @ self.spec.gamma(rgb)
         rgb_c = self.d_rgb * cones
         sign = jnp.sign(rgb_c)
@@ -136,7 +142,10 @@ class ViewingConditions:
         h = 100 * (i + endpoint(0) / (endpoint(0) - endpoint(1)))
 
         a_ = ((achromatic @ rgb_a - 0.305) * self.n_bb)
-        assert not jnp.any(a_ < 0)
+        checkify.check(
+                jnp.all(a_ >= 0),
+                "expected non-negative achromatic responses, got {a}",
+                a=a_)
 
         j = 100 * (a_ / self.a_w) ** (self.surroundings.c * self.z)
         q = (
@@ -161,13 +170,22 @@ class ViewingConditions:
 
     op = lambda self, rgb: jnp.asarray(self.ucs(rgb))
 
+    _partial = None
+    @property
+    def partial(self):
+        if self._partial is None:
+            self._partial = jax.vmap(
+                    lambda x: jax.jacobian(self.op)(x[:, None])[:, 0, :, 0])
+        return lambda x: self._partial(x.transpose())
+
     def projected(self, rgb):
         oob = jnp.any((rgb < 0) + (rgb > 1), axis=0)
         clipped = jnp.clip(rgb, 0, 1)
         res = self.op(clipped)
         delta = clipped - rgb
-        eps = 0 # vectorize jacobian along axis 1; no cross terms; nx3x3ish
-        return res + jnp.select([oob, True], [eps, 0])
+        grad = self.partial(clipped)
+        eps = jax.lax.dot_general(grad, delta, (((2,), (0,)), ((0,), (1,))))
+        return res + jnp.select([oob, True], [eps.transpose(), 0])
 
     def broadcast(self, rgb, axis, f="projected"):
         # transforms are channel first since that's how the paper organized them
@@ -177,7 +195,7 @@ class ViewingConditions:
         before, after = list(range(axis)), list(range(axis + 1, rgb.ndim))
         shuffled = rgb.transpose([axis] + before + after)
         res = _f(shuffled.reshape((3, -1)))
-        shaped = res.reshape(shuffled.shape)
+        shaped = res.reshape(res.shape[:1] + shuffled.shape[1:])
         return shaped.transpose(list(range(1, axis + 1)) + [0] + after)
 
     def delta(self, jab0, jab1):
@@ -187,5 +205,5 @@ class ViewingConditions:
 
 if __name__ == "__main__":
     vc = ViewingConditions()
-    rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3], [-0.2, 0.4, 0.3]])
+    rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3]])
     print(vc.broadcast(rgb, -1))
