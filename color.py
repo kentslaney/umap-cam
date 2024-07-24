@@ -1,4 +1,5 @@
 from collections import namedtuple
+from functools import partial
 import jax
 import jax.numpy as jnp
 from jax.experimental import checkify
@@ -108,6 +109,7 @@ class ViewingConditions:
         rescaled = (self.f_l * self.rgb_wc) ** 0.42
         self.rgb_aw = 400 * (rescaled / (rescaled + 27.13)) + 0.1
         self.a_w = ((achromatic @ self.rgb_aw - 0.305) * self.n_bb)
+        self.m_rgb_xyz # avoid side-effects
 
     # http://brucelindbloom.com/Eqn_RGB_XYZ_Matrix.html
     _m_rgb_xyz = None
@@ -170,31 +172,33 @@ class ViewingConditions:
 
     op = lambda self, rgb: jnp.asarray(self.ucs(rgb))
 
-    _partial = None
+    _grad = None
     @property
-    def partial(self):
-        if self._partial is None:
-            self._partial = jax.vmap(
+    def grad(self):
+        if self._grad is None:
+            self._grad = jax.vmap(
                     lambda x: jax.jacobian(self.op)(x[:, None])[:, 0, :, 0])
-        return lambda x: self._partial(x.transpose())
+        return lambda x: self._grad(x.transpose())
 
     def projected(self, rgb):
         oob = jnp.any((rgb < 0) + (rgb > 1), axis=0)
         clipped = jnp.clip(rgb, 0, 1)
         res = self.op(clipped)
         delta = clipped - rgb
-        grad = self.partial(clipped)
+        grad = self.grad(clipped)
         eps = jax.lax.dot_general(grad, delta, (((2,), (0,)), ((0,), (1,))))
         return res + jnp.select([oob, True], [eps.transpose(), 0])
 
-    def broadcast(self, rgb, axis, f="projected"):
+    @partial(jax.jit, static_argnums=0, static_argnames=("f", "axis"))
+    def broadcast(self, rgb, *, axis=-1, f="projected"):
         # transforms are channel first since that's how the paper organized them
         assert rgb.shape[axis] == 3
         _f = getattr(self, f) if isinstance(f, str) else f
         axis = rgb.ndim + axis if axis < 0 else axis
         before, after = list(range(axis)), list(range(axis + 1, rgb.ndim))
         shuffled = rgb.transpose([axis] + before + after)
-        res = _f(shuffled.reshape((3, -1)))
+        _, res = checkify.checkify(_f)(shuffled.reshape((3, -1)))
+        # inputs have been restricted to a valid domain, so ignore error output
         shaped = res.reshape(res.shape[:1] + shuffled.shape[1:])
         return shaped.transpose(list(range(1, axis + 1)) + [0] + after)
 
@@ -206,4 +210,4 @@ class ViewingConditions:
 if __name__ == "__main__":
     vc = ViewingConditions()
     rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3]])
-    print(vc.broadcast(rgb, -1))
+    print(vc.broadcast(rgb))
