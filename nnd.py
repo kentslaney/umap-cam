@@ -15,10 +15,17 @@ class GroupSetter:
             else self.group[i] for i in range(len(self.group))))
 
     def __getattr__(self, key):
-        f = getattr(self.group.__class__, key)
+        slicing = sliced = self.group[self.idx]
+        wrapper, wrapped = self.group.__class__, sliced.__class__
+        if wrapped != wrapper:
+            class Wrapping:
+                def __new__(cls, *a):
+                    return tuple.__new__(cls, a)
+            slicing = wrapped.__new__(
+                    type("Wrapper", (wrapped, Wrapping, wrapper), {}), *sliced)
+        f = getattr(slicing, key)
         assert callable(f)
-        return lambda *a, **kw: self.set(
-                f(self.group[self.idx], *a, **kw))
+        return lambda *a, **kw: self.set(f(*a, **kw))
 
 class GroupAt:
     def __init__(self, group):
@@ -162,13 +169,15 @@ class Heap(Group):
         return jax.lax.fori_loop(0, self.shape[1], inner, self)
 
     def ref(self, key):
-        return getattr(self, key) if isinstance(type(key), str) else self[key]
+        return getattr(self, key) if isinstance(key, str) else self[key]
 
     def push(self, *value, checked=()):
-        value = tuple(map(jnp.asarray, value))
-        ins = self.at[:len(value), 0].set(value)[:len(value), 0]
-        res = (ins.order < self.order[0]) & jnp.all(tuple(
-                jnp.all(ins.ref(i)[None] != self.ref(i)) for i in checked))
+        assert len(value) <= len(self), \
+                f"can't push {len(value)} values to a group of {len(self)}"
+        value = tuple(jnp.asarray(i) if isinstance(i, (int, float)) else i for i in value)
+        ins = type("Ins", (Heap, self[:len(value), 0].__class__), {})(*value)
+        res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
+                jnp.all(ins.ref(i)[None] != self.ref(i)) for i in checked)))
 
         def init(heap):
             heap = heap.at[:len(value), 0].set(value)
@@ -191,7 +200,7 @@ class Heap(Group):
         return res, jax.lax.cond(res, init, lambda a: a, self)
 
     def pusher(self, *a, **kw):
-        return __class__.push(self, *a, **kw)[1]
+        return self.push(*a, **kw)[1]
 
 @jax.tree_util.register_pytree_node_class
 class NNDHeap(Heap, grouping(
