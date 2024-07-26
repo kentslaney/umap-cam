@@ -174,7 +174,9 @@ class Heap(Group):
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
-        value = tuple(jnp.asarray(i) if isinstance(i, (int, float)) else i for i in value)
+        value = tuple(
+                jnp.asarray(i) if isinstance(i, (int, float))
+                else i for i in value)
         ins = type("Ins", (Heap, self[:len(value), 0].__class__), {})(*value)
         res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
                 jnp.all(ins.ref(i)[None] != self.ref(i)) for i in checked)))
