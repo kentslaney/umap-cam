@@ -5,6 +5,7 @@ import jax
 class GroupSetter:
     def __init__(self, group, idx):
         self.group, self.idx = group, idx + ((slice(None),) * 2)[len(idx):]
+        self.idx = (self.group.ref(self.idx[0]),) + self.idx[1:]
 
     def set(self, value):
         sel = range(len(self.group))[self.idx[0]]
@@ -49,6 +50,7 @@ class Group:
     def __getitem__(self, idx):
         if not isinstance(idx, tuple):
             idx = (idx,)
+        idx = (self.ref(idx[0]),) + idx[1:]
         if isinstance(range(len(self))[idx[0]], int):
             res = super().__getitem__(idx[0])
             return res[idx[1:]] if len(idx) > 1 else res
@@ -75,6 +77,9 @@ class Group:
     @property
     def shape(self):
         return (len(self),) + self[0].shape
+
+    def ref(self, key):
+        return self._fields.index(key) if isinstance(key, str) else key
 
     @property
     def order(self):
@@ -168,9 +173,6 @@ class Heap(Group):
             return heap
         return jax.lax.fori_loop(0, self.shape[1], inner, self)
 
-    def ref(self, key):
-        return getattr(self, key) if isinstance(key, str) else self[key]
-
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
@@ -179,7 +181,7 @@ class Heap(Group):
                 else i for i in value)
         ins = type("Ins", (Heap, self[:len(value), 0].__class__), {})(*value)
         res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
-                jnp.all(ins.ref(i)[None] != self.ref(i)) for i in checked)))
+                jnp.all(ins[i][None] != self[i]) for i in checked)))
 
         def init(heap):
             heap = heap.at[:len(value), 0].set(value)
@@ -227,14 +229,13 @@ class NNDHeap(Heap, grouping(
         heap, rng = jax.lax.fori_loop(0, self.shape[1], init, (self.grouped(
                 *((self.__new__(self.__class__, self.spec.points, limit),) * 2),
                 names=("old", "new")), rng))
-        flags = self._fields.index("flags")
         def end(i, cur):
             for j in range(limit):
                 mask = cur.indices[i] == heap.new.indices[i, j]
-                cur = cur.at[flags].set(jnp.where(mask, 0, cur.flags[i]))
+                cur = cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
             return cur
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
-        return cur, heap.new.indices, heap.old.indices, rng
+        return cur, heap[:, "indices"], rng
 
     def randomize(self, dist, rng):
         def inner(j, args):
