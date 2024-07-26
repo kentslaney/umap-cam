@@ -238,12 +238,12 @@ class NNDHeap(Heap, grouping(
             idx = jax.random.randint(subkey, (), 0, self.shape[1])
             heap = heap.at[:, i].pusher(
                     dist(idx, i), idx, jnp.uint8(1), checked=("indices",))
-            return heap, rng
+            return i, heap, rng
         def init(i, args):
             heap, rng = args
             cond = heap.indices[i, 0] < 0.
             return jax.lax.cond(cond, lambda i, heap, rng: jax.lax.fori_loop(
                     jnp.sum(heap.indices[i] >= 0), heap.shape[1], inner,
-                    (i, heap, rng)), lambda *a: a[1:], i, *args)
+                    (i, heap, rng)), lambda *a: a, i, *args)[1:]
         return jax.lax.fori_loop(0, self.shape[1], init, (self, rng))
 
