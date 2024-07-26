@@ -1,4 +1,5 @@
 from collections import namedtuple
+from functools import partial
 import jax.numpy as jnp
 import jax
 
@@ -115,7 +116,22 @@ class Group:
         return self._fields.index(key) if isinstance(key, str) else key
 
 class Named:
-    pass
+    def __repr__(self):
+        if not any("\n" in repr(i) for i in self):
+            return super().__repr__(self)
+        def arr_repr(arr):
+            if not isinstance(arr, jnp.ndarray):
+                return repr(array)
+            if arr.aval is not None and arr.aval.weak_type:
+                dtype_str = f'dtype={arr.dtype.name}, weak_type=True)'
+            else:
+                dtype_str = f'dtype={arr.dtype.name})'
+            return f"partial(Array, {dtype_str})(\n{arr._value})".replace(
+                    "\n", "\n" + " " * 8)
+        eq, sep = "=", ",\n\n" + " " * 4
+        data = zip(self._fields, map(arr_repr, self))
+        data = sep.join(eq.join(i) for i in data)
+        return f"{self.__class__.__name__}(\n{' ' * 4}{data}\n)"
 
 def nameable(clsname, names=None):
     if names is None or isinstance(names, int):
@@ -128,7 +144,7 @@ def nameable(clsname, names=None):
             def _fields(self):
                 return range(len(self))
     else:
-        class GroupSize(namedtuple(clsname, names), Named):
+        class GroupSize(Named, namedtuple(clsname, names)):
             pass
     return type(clsname, (GroupSize,), {})
 
@@ -282,6 +298,7 @@ def groupaux(*required, **defaults):
 class NNDHeap(groupaux(memory=True), Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
         (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
+    @partial(jax.jit, static_argnames=('limit'))
     def build(self, limit, rng):
         def init(i, args):
             for j in range(self.shape[2]):
@@ -325,4 +342,12 @@ class NNDHeap(groupaux(memory=True), Heap, grouping(
                     jnp.sum(heap.indices[i] >= 0), heap.shape[1], inner,
                     (i, heap, rng)), lambda *a: a, i, *args)[1:]
         return jax.lax.fori_loop(0, self.shape[1], init, (self, rng))
+
+if __name__ == "__main__":
+    rng = jax.random.key(0)
+    heap = NNDHeap(5, 4)
+    heap, rng = heap.randomize(lambda a, b: abs(a - b), rng)
+    heap = heap.sorted()
+    heap, step, rng = heap.build(3, rng)
+    print(f"{heap=}\n\n{step=}")
 
