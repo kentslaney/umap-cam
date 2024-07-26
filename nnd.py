@@ -70,10 +70,6 @@ class Group:
         return (len(self),) + self[0].shape
 
     @property
-    def ndim(self):
-        return len(self.shape)
-
-    @property
     def order(self):
         return self[0]
 
@@ -159,11 +155,11 @@ class Heap(Group):
         return jax.lax.while_loop(cond, inner, (self, i, False))[0]
 
     def sorted(self):
-        heap = self
-        for i in range(self.shape[1]): # TODO: vmap? too large for jit to unroll
+        def inner(i, heap):
             for j in range(self.shape[2] - 1, 0, -1):
                 heap = heap.swapped((i, 0), (i, j)).at[:, i, :j].sifted(0)
-        return heap
+            return heap
+        return jax.lax.fori_loop(0, self.shape[1], inner, self)
 
     def ref(self, key):
         return getattr(self, key) if isinstance(type(key), str) else self[key]
@@ -171,7 +167,7 @@ class Heap(Group):
     def push(self, *value, checked=()):
         value = tuple(map(jnp.asarray, value))
         ins = self.at[:len(value), 0].set(value)[:len(value), 0]
-        res = ins.order < self.order[0] and all((
+        res = (ins.order < self.order[0]) & jnp.all(tuple(
                 jnp.all(ins.ref(i)[None] != self.ref(i)) for i in checked))
 
         def init(heap):
@@ -201,8 +197,44 @@ class Heap(Group):
 class NNDHeap(Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
         (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
-    def build(self, limit, rng_state):
-        update = self.grouped(
+    def build(self, limit, rng):
+        def init(i, args):
+            for j in range(self.shape[2]):
+                conts = self.indices[i, j] < 0
+                args = jax.lax.cond(conts, lambda *a: a[2:], inner, j, i, *args)
+            return args
+        def inner(j, i, heap, rng):
+            rng, subkey = jax.random.split(rng)
+            d = jax.random.uniform(subkey)
+            idx = self.indices[i, j]
+            isn = jax.lax.cond(self.flags[i, j], lambda: 1, lambda: 0)
+            heap = heap.at[isn, :, i].pusher(d, idx, checked=("indices",))
+            heap = heap.at[isn, :, idx].pusher(d, i, checked=("indices",))
+            return heap, rng
+        heap, rng = jax.lax.fori_loop(0, self.shape[1], init, (self.grouped(
                 *((self.__new__(self.__class__, self.spec.points, limit),) * 2),
-                names=("old", "new"))
+                self, names=("old", "new", "cur")), rng))
+        def end(i, heap):
+            for j in range(limit):
+                heap = heap.at[2, 2, jnp.where(
+                    heap.cur.indices[i] == heap.new.indices[i, j])].set(0)
+            return heap
+        heap = jax.lax.fori_loop(0, self.shape[1], end, heap)
+        return heap.cur, heap.new.indices, heap.old.indices, rng
+
+    def randomize(self, dist, rng):
+        def inner(j, args):
+            i, heap, rng = args
+            rng, subkey = jax.random.split(rng)
+            idx = jax.random.randint(subkey, (), 0, self.shape[1])
+            heap = heap.at[:, i].pusher(
+                    dist(idx, i), idx, jnp.uint8(1), checked=("indices",))
+            return heap, rng
+        def init(i, args):
+            heap, rng = args
+            cond = heap.indices[i, 0] < 0.
+            return jax.lax.cond(cond, lambda i, heap, rng: jax.lax.fori_loop(
+                    jnp.sum(heap.indices[i] >= 0), heap.shape[1], inner,
+                    (i, heap, rng)), lambda *a: a[1:], i, *args)
+        return jax.lax.fori_loop(0, self.shape[1], init, (self, rng))
 
