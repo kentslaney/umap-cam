@@ -11,20 +11,35 @@ class GroupSetter:
         sel = range(len(self.group))[self.idx[0]]
         sel, value = ((sel,), (value,)) if isinstance(sel, int) else (
                 sel, value * len(sel) if len(value) == 1 else value)
-        return self.group.tree_unflatten(None, tuple(
+        return self.group.tree_unflatten(self.group.aux_data, tuple(
             self.group[i].at[self.idx[1:]].set(value[sel.index(i)]) if i in sel
             else self.group[i] for i in range(len(self.group))))
 
     def __getattr__(self, key):
-        slicing = sliced = self.group[self.idx]
+        sliced = self.group[self.idx]
         wrapper, wrapped = self.group.__class__, sliced.__class__
         if wrapped != wrapper:
-            class Wrapping:
+            class Shunt:
+                @classmethod
+                def skip(cls):
+                    return super(cls.mro()[cls.mro().index(Group) - 1], cls)
+
                 def __new__(cls, *a):
-                    return tuple.__new__(cls, a)
-            slicing = wrapped.__new__(
-                    type("Wrapper", (wrapped, Wrapping, wrapper), {}), *sliced)
-        f = getattr(slicing, key)
+                    return cls.skip().__new__(cls, *a)
+
+                def tree_flatten(self):
+                    return self.skip().tree_flatten(self)
+
+                @classmethod
+                def tree_unflatten(cls,  *a, **kw):
+                    return cls.skip().tree_unflatten(*a, **kw)
+            class Wrapping(wrapped, Shunt, wrapper):
+                @classmethod
+                def tree_unflatten(cls,  *a, **kw):
+                    return super().tree_unflatten(*a, **kw)
+            children = sliced.tree_flatten()[0]
+            sliced = Wrapping.tree_unflatten(self.group.aux_data, children)
+        f = getattr(sliced, key)
         assert callable(f)
         return lambda *a, **kw: self.set(f(*a, **kw))
 
@@ -41,10 +56,26 @@ class Group:
         return super().__new__(cls, *a, **kw)
 
     def tree_flatten(self):
-        return tuple(self), None
+        return tuple(self), ()
+
+    aux_keys = ()
+    @property
+    def aux_data(self):
+        return self.tree_flatten()[1]
+
+    @property
+    def aux_dict(self):
+        return dict(zip(self.aux_keys, self.aux_data))
+
+    def aux_keyed(self, keying):
+        meta = groupaux(**self.aux_dict)
+        class res(meta, keying):
+            pass
+        return type(keying.__name__, (meta, keying), {})
 
     @classmethod
     def tree_unflatten(cls, aux_data, children):
+        assert aux_data == ()
         return super().__new__(cls, *children)
 
     def __getitem__(self, idx):
@@ -61,12 +92,14 @@ class Group:
         if len(dims) == 0 and range(len(self))[idx[0]] == range(len(self)):
             if len(idx) == 1:
                 return self
-            return self.tree_unflatten(None, tuple(i[idx[1:]] for i in self))
+            return self.tree_unflatten(
+                    self.aux_data, tuple(i[idx[1:]] for i in self))
         dims = [i for i in self.spec._fields if i not in dims]
         dims = dims if isinstance(self.spec, Named) else len(dims)
         names = self._fields[idx[0]]
         names = names if isinstance(self, Named) else len(names)
-        return grouping(clsname, dims, names)(*(
+        res = grouping(clsname, dims, names)
+        return self.aux_keyed(res).tree_unflatten(self.aux_data, tuple(
                 i[idx[1:]] if len(idx) > 1 else i
                 for i in super().__getitem__(idx[0])))
 
@@ -94,8 +127,10 @@ def nameable(clsname, names=None):
             @property
             def _fields(self):
                 return range(len(self))
-        return type(clsname, (GroupSize,), {})
-    return type(clsname, (namedtuple(clsname, names), Named), {})
+    else:
+        class GroupSize(namedtuple(clsname, names), Named):
+            pass
+    return type(clsname, (GroupSize,), {})
 
 def grouping(clsname, dims=None, names=None, defaults=None):
     assert names is None or defaults is None or len(names) == len(defaults)
@@ -179,7 +214,9 @@ class Heap(Group):
         value = tuple(
                 jnp.asarray(i) if isinstance(i, (int, float))
                 else i for i in value)
-        ins = type("Ins", (Heap, self[:len(value), 0].__class__), {})(*value)
+        class Inserting(self[:len(value), 0].__class__, Heap):
+            pass
+        ins = Inserting.tree_unflatten(self.aux_data, value)
         res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
                 jnp.all(ins[i][None] != self[i]) for i in checked)))
 
@@ -206,8 +243,43 @@ class Heap(Group):
     def pusher(self, *a, **kw):
         return self.push(*a, **kw)[1]
 
+def groupaux(*required, **defaults):
+    order = required + tuple(sorted(defaults.keys()))
+    others = lambda kw: {k: v for k, v in kw.items() if k not in order}
+    class GroupAux:
+        def __new__(cls, *a, **kw):
+            assert all(k in kw for k in required)
+            obj = super().__new__(cls, *a, **others(kw))
+            obj.aux_keys += order
+            for k in order:
+                setattr(obj, k, kw[k] if k in kw else defaults[k])
+            return obj
+
+        def __repr__(self):
+            aux_data = zip(order, self.aux_data)
+            aux_data = ", ".join("=".join(map(str, i)) for i in aux_data)
+            aux_data = f" with {aux_data}" if aux_data else ""
+            return f"<{super().__repr__()}{aux_data} at {hex(id(self))}>"
+
+        def tree_flatten(self):
+            children, aux_data = super().tree_flatten()
+            aux_data += tuple(getattr(self, k) for k in order)
+            return children, aux_data
+
+        @classmethod
+        def tree_unflatten(cls, aux_data, children):
+            assert len(aux_data) >= len(order), f"{aux_data} {order}"
+            cutoff = len(aux_data) - len(order)
+            obj = super().tree_unflatten(aux_data[:cutoff], children)
+            obj.aux_keys += order
+            for k, v in zip(order, aux_data[cutoff:]):
+                setattr(obj, k, v)
+            assert all(hasattr(obj, k) for k in required)
+            return obj
+    return GroupAux
+
 @jax.tree_util.register_pytree_node_class
-class NNDHeap(Heap, grouping(
+class NNDHeap(groupaux(memory=True), Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
         (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
     def build(self, limit, rng):
@@ -225,10 +297,11 @@ class NNDHeap(Heap, grouping(
             update = update.at[:, idx].pusher(d, i, checked=("indices",))
             update = jax.lax.cond(
                     isn, lambda: (heap[0], update), lambda: (update, heap[1]))
-            return heap.tree_unflatten(None, update), rng
+            return heap.tree_unflatten(heap.aux_data, update), rng
+        clone = self.__new__(
+                self.__class__, self.spec.points, limit, **self.aux_dict)
         heap, rng = jax.lax.fori_loop(0, self.shape[1], init, (self.grouped(
-                *((self.__new__(self.__class__, self.spec.points, limit),) * 2),
-                names=("old", "new")), rng))
+                clone, clone, names=("old", "new")), rng))
         def end(i, cur):
             for j in range(limit):
                 mask = cur.indices[i] == heap.new.indices[i, j]
