@@ -215,21 +215,24 @@ class NNDHeap(Heap, grouping(
         def inner(j, i, heap, rng):
             rng, subkey = jax.random.split(rng)
             d = jax.random.uniform(subkey)
-            idx = self.indices[i, j]
-            isn = jax.lax.cond(self.flags[i, j], lambda: 1, lambda: 0)
-            heap = heap.at[isn, :, i].pusher(d, idx, checked=("indices",))
-            heap = heap.at[isn, :, idx].pusher(d, i, checked=("indices",))
-            return heap, rng
+            idx, isn = self.indices[i, j], self.flags[i, j]
+            update = jax.lax.cond(isn, lambda: heap[1], lambda: heap[0])
+            update = update.at[:, i].pusher(d, idx, checked=("indices",))
+            update = update.at[:, idx].pusher(d, i, checked=("indices",))
+            update = jax.lax.cond(
+                    isn, lambda: (heap[0], update), lambda: (update, heap[1]))
+            return heap.tree_unflatten(None, update), rng
         heap, rng = jax.lax.fori_loop(0, self.shape[1], init, (self.grouped(
                 *((self.__new__(self.__class__, self.spec.points, limit),) * 2),
-                self, names=("old", "new", "cur")), rng))
-        def end(i, heap):
+                names=("old", "new")), rng))
+        flags = self._fields.index("flags")
+        def end(i, cur):
             for j in range(limit):
-                heap = heap.at[2, 2, jnp.where(
-                    heap.cur.indices[i] == heap.new.indices[i, j])].set(0)
-            return heap
-        heap = jax.lax.fori_loop(0, self.shape[1], end, heap)
-        return heap.cur, heap.new.indices, heap.old.indices, rng
+                mask = cur.indices[i] == heap.new.indices[i, j]
+                cur = cur.at[flags].set(jnp.where(mask, 0, cur.flags[i]))
+            return cur
+        cur = jax.lax.fori_loop(0, self.shape[1], end, self)
+        return cur, heap.new.indices, heap.old.indices, rng
 
     def randomize(self, dist, rng):
         def inner(j, args):
