@@ -81,15 +81,6 @@ class Group:
     def ref(self, key):
         return self._fields.index(key) if isinstance(key, str) else key
 
-    @property
-    def order(self):
-        return self[0]
-
-    def swapped(self, i0, i1):
-        i0 = i0 if isinstance(i0, tuple) else (i0,)
-        i1 = i1 if isinstance(i1, tuple) else (i1,)
-        return self.at[:, *i0].set(self[:, *i1]).at[:, *i1].set(self[:, *i0])
-
 class Named:
     pass
 
@@ -142,6 +133,15 @@ def grouping(clsname, dims=None, names=None, defaults=None):
     return type(clsname, (GroupBase,), {})
 
 class Heap(Group):
+    @property
+    def order(self):
+        return self[0]
+
+    def swapped(self, i0, i1):
+        i0 = i0 if isinstance(i0, tuple) else (i0,)
+        i1 = i1 if isinstance(i1, tuple) else (i1,)
+        return self.at[:, *i0].set(self[:, *i1]).at[:, *i1].set(self[:, *i0])
+
     def sifted(self, i):
         sel = (lambda x, y: x, lambda x, y: y)
         def cond(args):
