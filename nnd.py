@@ -1,7 +1,9 @@
 from collections import namedtuple
 from functools import partial
 import jax.numpy as jnp
+from jax.experimental import checkify
 import jax
+import debug
 
 class GroupSetter:
     def __init__(self, group, idx):
@@ -118,7 +120,7 @@ class Group:
 class Named:
     def __repr__(self):
         if not any("\n" in repr(i) for i in self):
-            return super().__repr__(self)
+            return super().__repr__()
         def arr_repr(arr):
             if not isinstance(arr, jnp.ndarray):
                 return repr(array)
@@ -217,7 +219,7 @@ class Heap(Group):
             return heap, i, broken
         return jax.lax.while_loop(cond, inner, (self, i, False))[0]
 
-    def sorted(self):
+    def ascending(self):
         def inner(i, heap):
             for j in range(self.shape[2] - 1, 0, -1):
                 heap = heap.swapped((i, 0), (i, j)).at[:, i, :j].sifted(0)
@@ -264,7 +266,8 @@ def groupaux(*required, **defaults):
     others = lambda kw: {k: v for k, v in kw.items() if k not in order}
     class GroupAux:
         def __new__(cls, *a, **kw):
-            assert all(k in kw for k in required)
+            assert all(k in kw for k in required), \
+                    f"missing {','.join(set(required) - set(kw))}"
             obj = super().__new__(cls, *a, **others(kw))
             obj.aux_keys += order
             for k in order:
@@ -294,11 +297,13 @@ def groupaux(*required, **defaults):
             return obj
     return GroupAux
 
+euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
+
 @jax.tree_util.register_pytree_node_class
-class NNDHeap(groupaux(memory=True), Heap, grouping(
+class NNDHeap(Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
         (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
-    @partial(jax.jit, static_argnames=('limit'))
+    @partial(jax.jit, static_argnames=('limit',))
     def build(self, limit, rng):
         def init(i, args):
             for j in range(self.shape[2]):
@@ -325,29 +330,65 @@ class NNDHeap(groupaux(memory=True), Heap, grouping(
                 cur = cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
             return cur
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
-        return cur, heap[:, "indices"], rng
+        return cur, Candidates(*heap[:, "indices"]), rng
 
-    def randomize(self, dist, rng):
+    @partial(jax.jit, static_argnames=('dist',))
+    def randomize(self, data, rng, dist=euclidean):
         def inner(j, args):
             i, heap, rng = args
             rng, subkey = jax.random.split(rng)
-            idx = jax.random.randint(subkey, (), 0, self.shape[1])
+            idx = jax.random.randint(subkey, (), 0, self.shape[1] - 1)
+            idx += idx >= i
             heap = heap.at[:, i].pusher(
-                    dist(idx, i), idx, jnp.uint8(1), checked=("indices",))
+                    dist(data[idx], data[i]), idx, jnp.uint8(1),
+                    checked=("indices",))
             return i, heap, rng
         def init(i, args):
             heap, rng = args
-            cond = heap.indices[i, 0] < 0.
+            cond = heap.indices[i, 0] < 0
             return jax.lax.cond(cond, lambda i, heap, rng: jax.lax.fori_loop(
                     jnp.sum(heap.indices[i] >= 0), heap.shape[1], inner,
                     (i, heap, rng)), lambda *a: a, i, *args)[1:]
         return jax.lax.fori_loop(0, self.shape[1], init, (self, rng))
 
+class Candidates(grouping("Candidates", ("points", "size"), ("old", "new"))):
+    @partial(jax.jit, static_argnames=('apply', 'dist'))
+    def updates(self, apply, thresholds, data, *out, dist=euclidean):
+        def inner(idx):
+            start, end = self["new"], self[idx]
+            def loop(k, j, i, out):
+                p, q = start[i, j], end[i, k]
+                d = dist(data[p], data[q])
+                cond = (d < thresholds[p]) | (d < thresholds[q])
+                return jax.lax.cond(
+                        cond, lambda: apply(p, q, d, *out),
+                        lambda: out)
+            return loop
+        def checked(idx, start, f):
+            def outer(j, *args):
+                i, out = (j, *args)[-2:]
+                def inner(k, args):
+                    return jax.lax.cond(
+                            self[idx, i, k] >= 0, lambda *a: (*a[1:-1], f(*a)),
+                            lambda *a: a[1:], k, *args)
+                return jax.lax.fori_loop(
+                        start(j), self.shape[2], inner, (j, *args))[-1]
+            return outer
+        f = checked("new", lambda i: 0, lambda j, i, out: checked(
+                "old", lambda i: 0, inner("old"))(j, i, checked(
+                        "new", lambda i: i + 1, inner("new"))(j, i, out)))
+        return jax.lax.fori_loop(0, self.shape[1], f, out)
+
 if __name__ == "__main__":
+    config = (5, 4, 3)
     rng = jax.random.key(0)
-    heap = NNDHeap(5, 4)
-    heap, rng = heap.randomize(lambda a, b: abs(a - b), rng)
-    heap = heap.sorted()
-    heap, step, rng = heap.build(3, rng)
-    print(f"{heap=}\n\n{step=}")
+    heap = NNDHeap(*config[:2])
+    data = jnp.arange(heap.shape[1])
+    heap, rng = heap.randomize(data, rng)
+    heap, step, rng = heap.build(config[2], rng)
+    print(f"{heap=}", f"{step=}", sep="\n\n", end="\n\n")
+    processor = lambda p, q, d, *out: (out, jax.debug.print(
+            "{p} {q} {d} {out}",
+            p=p, q=q, d=d, out=out))[0]
+    updates = step.updates(processor, heap.distances[:, 0], data)
 
