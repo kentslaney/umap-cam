@@ -3,7 +3,6 @@ from functools import partial
 import jax.numpy as jnp
 from jax.experimental import checkify
 import jax
-import debug
 
 class GroupSetter:
     def __init__(self, group, idx):
@@ -19,32 +18,41 @@ class GroupSetter:
             else self.group[i] for i in range(len(self.group))))
 
     def __getattr__(self, key):
-        sliced = self.group[self.idx]
+        f = getattr(self.group.indirect[self.idx], key)
+        assert callable(f)
+        return lambda *a, **kw: self.set(f(*a, **kw))
+
+class Shunt:
+    @classmethod
+    def skip(cls):
+        return super(cls.mro()[cls.mro().index(Group) - 1], cls)
+
+    def __new__(cls, *a):
+        return cls.skip().__new__(cls, *a)
+
+    def tree_flatten(self):
+        return self.skip().tree_flatten(self)
+
+    @classmethod
+    def tree_unflatten(cls,  *a, **kw):
+        return cls.skip().tree_unflatten(*a, **kw)
+
+class GroupIndirect:
+    def __init__(self, group):
+        self.group = group
+
+    def __getitem__(self, idx):
+        sliced = self.group[idx]
         wrapper, wrapped = self.group.__class__, sliced.__class__
         if wrapped != wrapper:
-            class Shunt:
-                @classmethod
-                def skip(cls):
-                    return super(cls.mro()[cls.mro().index(Group) - 1], cls)
-
-                def __new__(cls, *a):
-                    return cls.skip().__new__(cls, *a)
-
-                def tree_flatten(self):
-                    return self.skip().tree_flatten(self)
-
-                @classmethod
-                def tree_unflatten(cls,  *a, **kw):
-                    return cls.skip().tree_unflatten(*a, **kw)
             class Wrapping(wrapped, Shunt, wrapper):
                 @classmethod
                 def tree_unflatten(cls,  *a, **kw):
                     return super().tree_unflatten(*a, **kw)
             children = sliced.tree_flatten()[0]
             sliced = Wrapping.tree_unflatten(self.group.aux_data, children)
-        f = getattr(sliced, key)
-        assert callable(f)
-        return lambda *a, **kw: self.set(f(*a, **kw))
+        return sliced
+
 
 class GroupAt:
     def __init__(self, group):
@@ -109,6 +117,10 @@ class Group:
     @property
     def at(self):
         return GroupAt(self)
+
+    @property
+    def indirect(self):
+        return GroupIndirect(self)
 
     @property
     def shape(self):
@@ -226,6 +238,12 @@ class Heap(Group):
             return heap
         return jax.lax.fori_loop(0, self.shape[1], inner, self)
 
+    # low memory but O(size); PyNNDescent uses python sets in high memory mode
+    # most devices probably vectorize it since it's a contiguous chunk of int32s
+    # a binary search might be worth profiling but GPU jobs are usually IO bound
+    def check(self, ins, idx):
+        return jnp.all(ins[idx][None] != self[idx])
+
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
@@ -236,7 +254,7 @@ class Heap(Group):
             pass
         ins = Inserting.tree_unflatten(self.aux_data, value)
         res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
-                jnp.all(ins[i][None] != self[i]) for i in checked)))
+                self.check(ins, i) for i in checked)))
 
         def init(heap):
             heap = heap.at[:len(value), 0].set(value)
@@ -313,6 +331,7 @@ class NNDHeap(Heap, grouping(
         def inner(j, i, heap, rng):
             rng, subkey = jax.random.split(rng)
             d = jax.random.uniform(subkey)
+            # check flag
             idx, isn = self.indices[i, j], self.flags[i, j]
             update = jax.lax.cond(isn, lambda: heap[1], lambda: heap[0])
             update = update.at[:, i].pusher(d, idx, checked=("indices",))
@@ -327,6 +346,7 @@ class NNDHeap(Heap, grouping(
         def end(i, cur):
             for j in range(limit):
                 mask = cur.indices[i] == heap.new.indices[i, j]
+                # reset flag
                 cur = cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
             return cur
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
@@ -350,6 +370,27 @@ class NNDHeap(Heap, grouping(
                     jnp.sum(heap.indices[i] >= 0), heap.shape[1], inner,
                     (i, heap, rng)), lambda *a: a, i, *args)[1:]
         return jax.lax.fori_loop(0, self.shape[1], init, (self, rng))
+
+    def apply(self, p, q, d):
+        heap, total = self, 0
+        for i, j in ((p, q), (q, p)):
+            # set flag
+            added, updated = heap.indirect[:, i].push(
+                    d, j, 1, checked=("indices",))
+            heap = heap.at[:, i].set(updated)
+            total += added
+        return heap, total
+
+    @staticmethod
+    def accumulator(p, q, d, heap, total):
+        heap, added = heap.apply(p, q, d)
+        return heap, total + added
+
+    @partial(jax.jit, static_argnames=('dist',))
+    def update(self, candidates, data, dist=euclidean):
+        return candidates.updates(
+                self.accumulator, self.distances[:, 0], data, self, 0,
+                dist=dist)
 
 class Candidates(grouping("Candidates", ("points", "size"), ("old", "new"))):
     @partial(jax.jit, static_argnames=('apply', 'dist'))
@@ -387,8 +428,6 @@ if __name__ == "__main__":
     heap, rng = heap.randomize(data, rng)
     heap, step, rng = heap.build(config[2], rng)
     print(f"{heap=}", f"{step=}", sep="\n\n", end="\n\n")
-    processor = lambda p, q, d, *out: (out, jax.debug.print(
-            "{p} {q} {d} {out}",
-            p=p, q=q, d=d, out=out))[0]
-    updates = step.updates(processor, heap.distances[:, 0], data)
+    heap, changes = heap.update(step, data)
+    print(f"{heap=}", f"{changes=}", sep="\n\n", end="\n\n")
 
