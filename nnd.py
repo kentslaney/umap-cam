@@ -3,6 +3,7 @@ from functools import partial
 import jax.numpy as jnp
 from jax.experimental import checkify
 import jax
+import rpt
 
 class GroupSetter:
     def __init__(self, group, idx):
@@ -98,16 +99,16 @@ class Group:
             return res[idx[1:]] if len(idx) > 1 else res
         clsname = self.__class__.__name__ + "Slice"
         dims = [
-                i for i, j in zip(self.spec._fields, idx[1:])
+                i for i, j in zip(self.spec._names, idx[1:])
                 if not isinstance(j, slice)]
         if len(dims) == 0 and range(len(self))[idx[0]] == range(len(self)):
             if len(idx) == 1:
                 return self
             return self.tree_unflatten(
                     self.aux_data, tuple(i[idx[1:]] for i in self))
-        dims = [i for i in self.spec._fields if i not in dims]
+        dims = [i for i in self.spec._names if i not in dims]
         dims = dims if isinstance(self.spec, Named) else len(dims)
-        names = self._fields[idx[0]]
+        names = self._names[idx[0]]
         names = names if isinstance(self, Named) else len(names)
         res = grouping(clsname, dims, names)
         return self.aux_keyed(res).tree_unflatten(self.aux_data, tuple(
@@ -147,6 +148,10 @@ class Named:
         data = sep.join(eq.join(i) for i in data)
         return f"{self.__class__.__name__}(\n{' ' * 4}{data}\n)"
 
+    @property
+    def _names(self):
+        return self._fields
+
 def nameable(clsname, names=None):
     if names is None or isinstance(names, int):
         class GroupSize(tuple):
@@ -155,7 +160,7 @@ def nameable(clsname, names=None):
                 return super().__new__(cls, a)
 
             @property
-            def _fields(self):
+            def _names(self):
                 return range(len(self))
     else:
         class GroupSize(Named, namedtuple(clsname, names)):
@@ -350,7 +355,7 @@ class NNDHeap(Heap, grouping(
                 cur = cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
             return cur
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
-        return cur, Candidates(*heap[:, "indices"]), rng
+        return cur, NNDCandidates(*heap[:, "indices"]), rng
 
     @partial(jax.jit, static_argnames=('dist',))
     def randomize(self, data, rng, dist=euclidean):
@@ -392,42 +397,75 @@ class NNDHeap(Heap, grouping(
                 self.accumulator, self.distances[:, 0], data, self, 0,
                 dist=dist)
 
-class Candidates(grouping("Candidates", ("points", "size"), ("old", "new"))):
-    @partial(jax.jit, static_argnames=('apply', 'dist'))
-    def updates(self, apply, thresholds, data, *out, dist=euclidean):
-        def inner(idx):
-            start, end = self["new"], self[idx]
-            def loop(k, j, i, out):
-                p, q = start[i, j], end[i, k]
-                d = dist(data[p], data[q])
-                cond = (d < thresholds[p]) | (d < thresholds[q])
-                return jax.lax.cond(
-                        cond, lambda: apply(p, q, d, *out),
-                        lambda: out)
-            return loop
-        def checked(idx, start, f):
-            def outer(j, *args):
+class Candidates:
+    def checked(self, apply, thresholds, data, dist):
+        def inner(k, idx1, j, idx0, i, out):
+            p, q = idx0[i, j], idx1[i, k]
+            d = dist(data[p], data[q])
+            cond = (d < thresholds[p]) | (d < thresholds[q])
+            return jax.lax.cond(
+                    cond, lambda: apply(p, q, d, *out),
+                    lambda: out)
+
+        def outer(idx, start, f):
+            idx = self[idx]
+            def loop(j, *args):
                 i, out = (j, *args)[-2:]
                 def inner(k, args):
                     return jax.lax.cond(
-                            self[idx, i, k] >= 0, lambda *a: (*a[1:-1], f(*a)),
-                            lambda *a: a[1:], k, *args)
+                            idx[i, k] >= 0, lambda *a: (*a[2:-1], f(*a)),
+                            lambda *a: a[2:], k, idx, *args)
                 return jax.lax.fori_loop(
                         start(j), self.shape[2], inner, (j, *args))[-1]
-            return outer
-        f = checked("new", lambda i: 0, lambda j, i, out: checked(
-                "old", lambda i: 0, inner("old"))(j, i, checked(
-                        "new", lambda i: i + 1, inner("new"))(j, i, out)))
+            return loop
+        return outer, inner
+
+class NNDCandidates(Candidates, grouping(
+        "NNDCandidates", ("points", "size"), ("old", "new"))):
+    @partial(jax.jit, static_argnames=('apply', 'dist'))
+    def updates(self, apply, thresholds, data, *out, dist=euclidean):
+        outer, inner = self.checked(apply, thresholds, data, dist)
+        f = outer("new", lambda i: 0, lambda *a: h(*a[:-1], g(*a)))
+        g = outer("new", lambda i: i + 1, inner)
+        h = outer("old", lambda i: 0, inner)
         return jax.lax.fori_loop(0, self.shape[1], f, out)
 
-if __name__ == "__main__":
-    config = (5, 4, 3)
-    rng = jax.random.key(0)
-    heap = NNDHeap(*config[:2])
-    data = jnp.arange(heap.shape[1])
-    heap, rng = heap.randomize(data, rng)
-    heap, step, rng = heap.build(config[2], rng)
-    print(f"{heap=}", f"{step=}", sep="\n\n", end="\n\n")
-    heap, changes = heap.update(step, data)
-    print(f"{heap=}", f"{changes=}", sep="\n\n", end="\n\n")
+@jax.tree_util.register_pytree_node_class
+class RPCandidates(groupaux("total"), Candidates, grouping(
+        "RPCandidates", ("points", "size"))):
+    @partial(jax.jit, static_argnames=('apply', 'dist'))
+    def updates(self, apply, thresholds, data, *out, dist=euclidean):
+        outer, inner = self.checked(apply, thresholds, data, dist)
+        f = outer(0, lambda i: 0, lambda *a: g(*a))
+        g = outer(0, lambda i: i + 1, inner)
+        return jax.lax.fori_loop(0, self.total, f, out)
 
+    @classmethod
+    def forest(cls, *a, **kw):
+        rng, total, trees = rpt.forest(*a, **kw)
+        return rng, cls(trees, total=total)
+
+    def __repr__(self):
+        sliced = self[0, :self.total] if self.total != self.shape[1] else self
+        return str(sliced._value)
+
+TestingConfig = namedtuple(
+        "Config", ("points", "neighbors", "max_candidates", "n_trees", "ndim"),
+        defaults=(128, 8, 4, 2, 1))
+
+def test_step(*a, **kw):
+    setup = TestingConfig(*a, **kw)
+    rng = jax.random.key(0)
+    rng, subkey = jax.random.split(rng)
+    data = jax.random.normal(subkey, (setup.points, setup.ndim))
+    rng, trees = RPCandidates.forest(rng, data, setup.n_trees)
+    heap = NNDHeap(setup.points, setup.neighbors)
+    heap, rng = heap.randomize(data, rng)
+    heap, initialized = heap.update(trees, data)
+    heap, step, rng = heap.build(setup.max_candidates, rng)
+    heap, changes = heap.update(step, data)
+    return heap
+
+if __name__ == "__main__":
+    import sys
+    test_step(*map(int, sys.argv[1:]))
