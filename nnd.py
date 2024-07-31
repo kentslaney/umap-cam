@@ -54,7 +54,6 @@ class GroupIndirect:
             sliced = Wrapping.tree_unflatten(self.group.aux_data, children)
         return sliced
 
-
 class GroupAt:
     def __init__(self, group):
         self.group = group
@@ -404,8 +403,7 @@ class Candidates:
             d = dist(data[p], data[q])
             cond = (d < thresholds[p]) | (d < thresholds[q])
             return jax.lax.cond(
-                    cond, lambda: apply(p, q, d, *out),
-                    lambda: out)
+                    (p != q) & cond, lambda: apply(p, q, d, *out), lambda: out)
 
         def outer(idx, start, f):
             idx = self[idx]
@@ -449,6 +447,27 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
         sliced = self[0, :self.total] if self.total != self.shape[1] else self
         return str(sliced._value)
 
+@partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees"))
+def knn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
+    max_candidates = min(64, k) if max_candidates is None else max_candidates
+    heap = NNDHeap(data.shape[0], k)
+    heap, rng = heap.randomize(data, rng)
+    rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
+    heap, _ = heap.update(trees, data)
+    def cond(args):
+        i, broken, _, _ = args
+        return ~broken & (i < iters)
+    def loop(args):
+        i, _, heap, rng = args
+        heap, step, rng = heap.build(max_candidates, rng)
+        heap, changes = heap.update(step, data)
+        # jax.debug.print("finished iteration {} with {} updates", i, changes)
+        return i + 1, changes <= delta * k * data.shape[0], heap, rng
+    i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
+    # jax.lax.cond(i < iters, lambda: jax.debug.print(
+    #         "stopped early after {} iterations", i), lambda: None)
+    return rng, heap
+
 TestingConfig = namedtuple(
         "Config", ("points", "neighbors", "max_candidates", "n_trees", "ndim"),
         defaults=(128, 8, 4, 2, 1))
@@ -458,13 +477,10 @@ def test_step(*a, **kw):
     rng = jax.random.key(0)
     rng, subkey = jax.random.split(rng)
     data = jax.random.normal(subkey, (setup.points, setup.ndim))
-    rng, trees = RPCandidates.forest(rng, data, setup.n_trees)
-    heap = NNDHeap(setup.points, setup.neighbors)
-    heap, rng = heap.randomize(data, rng)
-    heap, initialized = heap.update(trees, data)
-    heap, step, rng = heap.build(setup.max_candidates, rng)
-    heap, changes = heap.update(step, data)
-    return heap
+    rng, heap = knn(
+            setup.neighbors, rng, data, max_candidates=setup.max_candidates,
+            n_trees=setup.n_trees)
+    print(f"{heap=}")
 
 if __name__ == "__main__":
     import sys

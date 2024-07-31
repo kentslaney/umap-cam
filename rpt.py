@@ -50,8 +50,11 @@ def binaryBounds(n, idx, size):
     right = (n - 2 ** right + 1) >> right
     return idx[left], idx[right]
 
-# print(f"{i:02} {i:04b} {rightmostSetBit(i): 2} {rightmostUnsetBit(i)}" + (
-#         " {: 4}" * 2).format(*binaryBounds(i, range(100, 116), 16)))
+def test_bounds():
+    for i in range(16):
+        print(
+                f"{i:02} {i:04b} {rightmostSetBit(i): 2} {rightmostUnsetBit(i)}"
+                + (" {: 4}" * 2).format(*binaryBounds(i, range(100, 116), 16)))
 
 @partial(jax.jit, static_argnames=("goal_leaf_size", "bound", "loops", "warn"))
 def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
@@ -178,10 +181,3 @@ def forest(rng, data, n_trees=None, max_leaf_size=30, bound=0.75, loops=None):
         trees = jax.lax.dynamic_update_slice_in_dim(trees, leaves, total, 0)
         return rng, total + size, trees
     return jax.lax.fori_loop(0, n_trees, loop, (rng, 0, trees))
-
-if __name__ == "__main__":
-    rng = jax.random.key(0)
-    rng, subkey = jax.random.split(rng)
-    data = jax.random.normal(subkey, (128, 1))
-    rng, total, trees = forest(rng, data, n_trees=2)
-    print(trees[:total])
