@@ -1,5 +1,5 @@
 from functools import partial
-from nnd import npy_cache, grouping
+from nnd import npy_cache, grouping, groupaux
 from jax.experimental import sparse
 from jax.scipy import optimize
 import jax.numpy as jnp
@@ -86,18 +86,34 @@ def noisy_scale(rng, data, hi=10.0, noise=0.0001):
     lo = jnp.min(data, 0)
     return rng, hi * (data - lo) / (jnp.max(data, 0) - lo)
 
+# weights depend on n_epochs
+@jax.tree_util.register_pytree_node_class
+class Adjacencies(groupaux("n_epochs"), grouping(
+        "Adjacencies", names=("head", "tail", "weight"))):
+    @classmethod
+    def from_sparse(cls, graph, n_epochs=None):
+        default_epochs = 500 if graph.shape[0] <= 10_000 else 200
+        n_epochs = default_epochs if n_epochs is None else n_epochs
+        norm = n_epochs if n_epochs > 10 else default_epochs
+        data = jnp.where(
+                graph.data < jnp.max(graph.data) / norm, 0., graph.data)
+        n_samples = n_epochs * graph.data / jnp.max(graph.data)
+        data = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
+        return cls(*graph.indices.T, data, n_epochs=n_epochs)
+
+    @property
+    def indices(self):
+        return jnp.stack(self[:2]).T
+
+    @property
+    def data(self):
+        return self.weight
+
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, heap, n_components, n_epochs=None):
     graph = simplices(memberships(heap))
-    default_epochs = 500 if graph.shape[0] <= 10_000 else 200
-    n_epochs = default_epochs if n_epochs is None else n_epochs
-    norm = n_epochs if n_epochs > 10 else default_epochs
-    graph.data = jnp.where(
-            graph.data < jnp.max(graph.data) / norm, 0., graph.data)
     rng, embedding = noisy_scale(*sparse_pca(rng, graph, n_components))
-    n_samples = n_epochs * graph.data / jnp.max(graph.data)
-    graph.data = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
-    return rng, embedding, graph, n_epochs
+    return rng, embedding, Adjacencies.from_sparse(graph, n_epochs)
 
 """
 from the original documentation:
@@ -130,13 +146,13 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
 
 @partial(jax.jit, static_argnames=("move_other",))
 def optimize_embedding(
-        rng, embedding, graph, n_epochs, a, b, gamma=1.,
-        move_other=False, negative_sample_rate=5):
+        rng, embedding, graph, a, b, gamma=1., move_other=False,
+        negative_sample_rate=5):
     args = (embedding,) * 2
     def cond(freq, n):
         return n % freq < 1
     def epoch(i, n, rng, head_embedding, tail_embedding):
-        alpha = 1 - n / n_epochs
+        alpha = 1 - n / graph.n_epochs
         j, k = graph.indices[i]
         current, other = head_embedding[j], tail_embedding[k]
         dist2 = jnp.sum((current - other) ** 2)
@@ -159,7 +175,7 @@ def optimize_embedding(
             return rng, head_embedding, tail_embedding
         return jax.lax.fori_loop(0, negative_sample_rate, negative, (
                 rng, head_embedding, tail_embedding))
-    args = jax.lax.fori_loop(0, n_epochs, lambda n, a: jax.lax.fori_loop(
+    args = jax.lax.fori_loop(0, graph.n_epochs, lambda n, a: jax.lax.fori_loop(
             0, graph.data.shape[0], lambda i, a: jax.lax.cond(
                 graph.data[i] > 0 & cond(graph.data[i], n),
                 lambda i, n, a: epoch(i, n, *a),
@@ -169,6 +185,7 @@ def optimize_embedding(
 if __name__ == "__main__":
     from nnd import test_step
     data, heap = npy_cache("test_step")
-    init = initialize(jax.random.key(0), heap, 3)
-    print(optimize_embedding(*init, *fit_ab()))
+    rng, embed, adj = initialize(jax.random.key(0), heap, 3)
+    rng, lo, hi = optimize_embedding(rng, embed, adj, *fit_ab())
+    print(lo)
 
