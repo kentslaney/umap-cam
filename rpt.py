@@ -91,6 +91,7 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
                 def loop(args):
                     prev, mask, rng, normal, boundary = args
                     rng, first, second = sample(rng, left, right)
+                    # for arbitrary distance functions, check which is closer
                     normal, boundary = hyperplane(
                             data[order[first]], data[order[second]])
                     mask = jnp.sum(data[sliced] * normal[None], 1) > boundary

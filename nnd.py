@@ -87,6 +87,9 @@ class Group:
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         assert aux_data == ()
+        if cls._dtypes is not None:
+            children = tuple(jnp.asarray(j, dtype=i) for i, j in zip(
+                    cls._dtypes, children))
         return super().__new__(cls, *children)
 
     def __getitem__(self, idx):
@@ -174,6 +177,7 @@ def grouping(clsname, dims=None, names=None, defaults=None):
     GroupSpec = nameable(f"{clsname}Spec", dims)
     Container = nameable(f"{clsname}Base", amount if names is None else names)
     class GroupBase(Group, Container):
+        _dtypes = defaults and tuple(i.dtype for i in defaults)
         def __new__(cls, *a, **kw):
             if defaults is None:
                 checking = (i for i in a + tuple(kw.values()))
@@ -448,12 +452,13 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
         return str(sliced._value)
 
 @partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees"))
-def knn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
+def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
     max_candidates = min(64, k) if max_candidates is None else max_candidates
     heap = NNDHeap(data.shape[0], k)
     heap, rng = heap.randomize(data, rng)
-    rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
-    heap, _ = heap.update(trees, data)
+    if n_trees != 0:
+        rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
+        heap, _ = heap.update(trees, data)
     def cond(args):
         i, broken, _, _ = args
         return ~broken & (i < iters)
@@ -466,22 +471,38 @@ def knn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
     i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
     # jax.lax.cond(i < iters, lambda: jax.debug.print(
     #         "stopped early after {} iterations", i), lambda: None)
-    return rng, heap
+    return rng, heap.ascending()
 
 TestingConfig = namedtuple(
-        "Config", ("points", "neighbors", "max_candidates", "n_trees", "ndim"),
-        defaults=(128, 8, 4, 2, 1))
+        "Config",
+        ("points", "neighbors", "max_candidates", "n_trees", "ndim", "seed"),
+        defaults=(128, 8, 4, 2, 1, 0))
 
 def test_step(*a, **kw):
     setup = TestingConfig(*a, **kw)
-    rng = jax.random.key(0)
+    rng = jax.random.key(setup.seed)
     rng, subkey = jax.random.split(rng)
     data = jax.random.normal(subkey, (setup.points, setup.ndim))
-    rng, heap = knn(
+    rng, heap = aknn(
             setup.neighbors, rng, data, max_candidates=setup.max_candidates,
             n_trees=setup.n_trees)
-    print(f"{heap=}")
+    return data, heap
+
+def npy_cache(uniq, *, ndim=16, path=None, **kw):
+    import pathlib
+    path = pathlib.Path.cwd() if path is None else pathlib.Path(path)
+    path = path.parents[0] if path.is_file() else path
+    assert path.is_dir()
+    full = path / f"{uniq}.npz"
+    if not full.is_file():
+        data, heap = test_step(ndim=ndim, **kw)
+        jnp.savez(full, data, heap)
+    else:
+        data, heap = jnp.load(full).values()
+        heap = NNDHeap.tree_unflatten((), heap)
+    return data, heap
 
 if __name__ == "__main__":
     import sys
-    test_step(*map(int, sys.argv[1:]))
+    heap = test_step(*map(int, sys.argv[1:]))
+    print(f"{heap=}")
