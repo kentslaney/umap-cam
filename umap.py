@@ -188,7 +188,7 @@ class Optimizer:
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
         raise NotImplementedError
 
-    # @jax.jit
+    @jax.jit
     def optimize(self, rng, embedding, adj):
         args = (embedding,) * 2
         def cond(freq, n):
