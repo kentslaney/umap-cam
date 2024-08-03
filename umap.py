@@ -152,45 +152,74 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
     y = jnp.where(x < min_dist, 1., jnp.exp(-(x - min_dist) / spread))
     return optimize.minimize(lsq, jnp.ones((ndim,)), method="BFGS")[0]
 
-@partial(jax.jit, static_argnames=("move_other",))
-def optimize_embedding(
-        rng, embedding, adj, a, b, gamma=1., move_other=False,
-        negative_sample_rate=5):
-    args = (embedding,) * 2
-    def cond(freq, n):
-        return n % freq < 1
-    def epoch(i, n, rng, head_embedding, tail_embedding):
+@jax.tree_util.register_pytree_node_class
+class Optimizer:
+    order = (("a", "b"), ("move_other", "gamma", "negative_sample_rate"))
+    def __init__(
+            self, spread=1, min_dist=0.1, a=None, b=None, move_other=False,
+            gamma=1, negative_sample_rate=5):
+        self.a, self.b = fit_ab(
+                spread, min_dist, a, b) if a is None or b is None else (a, b)
+        self.move_other = move_other
+        self.gamma, self.negative_sample_rate = gamma, negative_sample_rate
+
+    def tree_flatten(self):
+        return tuple(tuple(getattr(self, j) for j in i) for i in self.order)
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        matched = zip(cls.order, (children, aux_data))
+        return cls(**{j: k for i in matched for j, k in zip(*i)})
+
+    @staticmethod
+    def dist(current, other):
+        return jnp.sum((current - other) ** 2)
+
+    def phi(self, current, other):
+        dist = self.dist(current, other)
+        embed = 1 / (1 + self.a * dist ** self.b)
+        return jnp.where(dist > 0, embed, 0)
+
+    def positive_loss(self, current, other):
+        return jnp.log(self.phi(current, other))
+
+    def negative_loss(self, current, other):
+        return self.gamma * jnp.log(1 - self.phi(current, other))
+
+    def negative_sample(self, p, args):
+        rng, head_embedding, tail_embedding, adj, n, j, current = args
+        alpha = 1 - n / adj.n_epochs
+        rng, k = adj.sample(rng)
+        other = tail_embedding[k]
+        coeff = jax.grad(self.negative_loss, 1)(current, other)
+        coeff = jnp.clip(coeff, -4, 4)
+        head_embedding = head_embedding.at[j].set(current + coeff * alpha)
+        return rng, head_embedding, tail_embedding, adj, n, j, current
+
+    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
         alpha, j, k = 1 - n / adj.n_epochs, adj.head[i], adj.tail[i]
         current, other = head_embedding[j], tail_embedding[k]
-        dist2 = jnp.sum((current - other) ** 2)
-        coeff = jnp.where(dist2 > 0, -2 * a * b * jnp.pow(dist2, b - 1) / (
-                a * jnp.pow(dist2, b) + 1), 0)
-        coeff = jnp.clip(coeff * (current - other), -4, 4)
+        coeff = jax.grad(self.positive_loss, 1)(current, other)
+        coeff = jnp.clip(coeff, -4, 4)
         head_embedding = head_embedding.at[j].set(current + coeff * alpha)
-        if move_other:
+        if self.move_other:
             tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
-        def negative(p, args):
-            rng, head_embedding, tail_embedding = args
-            rng, k = adj.sample(rng)
-            other = tail_embedding[k]
-            dist2 = jnp.sum((current - other) ** 2)
-            coeff = jnp.where(dist2 > 0, 2 * gamma * b / (0.001 + dist2) / (
-                    a * jnp.pow(dist2, b) + 1), 0)
-            coeff = jnp.clip(coeff * (current - other), -4, 4)
-            head_embedding = head_embedding.at[j].set(current + coeff * alpha)
-            return rng, head_embedding, tail_embedding
-        return jax.lax.fori_loop(0, negative_sample_rate, negative, (
-                rng, head_embedding, tail_embedding))
-    args = jax.lax.fori_loop(
-            0, adj.n_epochs,
-            lambda n, a: adj.filtered(lambda x: cond(x, n), lambda i, *a: epoch(
-                i, n, *a), *a), (rng, *args))
-    return args
+        return jax.lax.fori_loop(
+                0, self.negative_sample_rate, self.negative_sample,
+                (rng, head_embedding, tail_embedding, adj, n, j, current))[:-3]
+
+    @jax.jit
+    def optimize(self, rng, embedding, adj):
+        args = (embedding,) * 2
+        def cond(freq, n):
+            return n % freq < 1
+        return jax.lax.fori_loop(0, adj.n_epochs, lambda n, a: adj.filtered(
+                lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a),
+                *a), (rng, *args, adj))[:-1]
 
 if __name__ == "__main__":
     from nnd import npy_cache
     data, heap = npy_cache("test_step")
-    init = initialize(jax.random.key(0), heap, 3)
-    rng, lo, hi = optimize_embedding(*init, *fit_ab())
+    rng, lo, hi = Optimizer().optimize(*initialize(jax.random.key(0), heap, 3))
     print(lo)
 
