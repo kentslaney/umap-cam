@@ -201,7 +201,8 @@ class Optimizer:
         current, other = head_embedding[j], tail_embedding[k]
         coeff = jax.grad(self.positive_loss, 1)(current, other)
         coeff = jnp.clip(coeff, -4, 4)
-        head_embedding = head_embedding.at[j].set(current + coeff * alpha)
+        current += coeff * alpha
+        head_embedding = head_embedding.at[j].set(current)
         if self.move_other:
             tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
         return jax.lax.fori_loop(
