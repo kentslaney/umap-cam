@@ -111,10 +111,6 @@ class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
         return self.iter(lambda i, a: jax.lax.cond(cond(
                 self.weight[i]), callback, lambda i, *a: a, i, *a), args)
 
-    def sample(self, rng):
-        rng, subkey = jax.random.split(rng)
-        return rng, jax.random.randint(subkey, (), 0, self.entries)
-
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, heap, n_components, n_epochs=None):
     assert n_components <= heap.shape[2]
@@ -152,7 +148,6 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
     y = jnp.where(x < min_dist, 1., jnp.exp(-(x - min_dist) / spread))
     return optimize.minimize(lsq, jnp.ones((ndim,)), method="BFGS")[0]
 
-@jax.tree_util.register_pytree_node_class
 class Optimizer:
     order = (("a", "b"), ("move_other", "gamma", "negative_sample_rate"))
     def __init__(
@@ -186,30 +181,14 @@ class Optimizer:
     def negative_loss(self, current, other):
         return self.gamma * jnp.log(1 - self.phi(current, other))
 
-    def negative_sample(self, p, args):
-        rng, head_embedding, tail_embedding, adj, n, j, current = args
-        alpha = 1 - n / adj.n_epochs
-        rng, k = adj.sample(rng)
-        other = tail_embedding[k]
-        coeff = jax.grad(self.negative_loss, 1)(current, other)
-        coeff = jnp.clip(coeff, -4, 4)
-        head_embedding = head_embedding.at[j].set(current + coeff * alpha)
-        return rng, head_embedding, tail_embedding, adj, n, j, current
+    @staticmethod
+    def clip(grad):
+        return jnp.clip(grad, -4, 4)
 
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
-        alpha, j, k = 1 - n / adj.n_epochs, adj.head[i], adj.tail[i]
-        current, other = head_embedding[j], tail_embedding[k]
-        coeff = jax.grad(self.positive_loss, 1)(current, other)
-        coeff = jnp.clip(coeff, -4, 4)
-        current += coeff * alpha
-        head_embedding = head_embedding.at[j].set(current)
-        if self.move_other:
-            tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
-        return jax.lax.fori_loop(
-                0, self.negative_sample_rate, self.negative_sample,
-                (rng, head_embedding, tail_embedding, adj, n, j, current))[:-3]
+        raise NotImplementedError
 
-    @jax.jit
+    # @jax.jit
     def optimize(self, rng, embedding, adj):
         args = (embedding,) * 2
         def cond(freq, n):
@@ -218,9 +197,32 @@ class Optimizer:
                 lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a),
                 *a), (rng, *args, adj))[:-1]
 
+@jax.tree_util.register_pytree_node_class
+class RoteOptimizer(Optimizer):
+    def negative_sample(self, current, rng, tail_embedding, adj, alpha):
+        rng, subkey = jax.random.split(rng)
+        k = jax.random.randint(subkey, (), 0, tail_embedding.shape[0])
+        other = tail_embedding[k]
+        coeff = self.clip(jax.grad(self.negative_loss, 1)(current, other))
+        # no gradient accumulation to match per-sample updates in the original
+        return current + coeff * alpha, rng, tail_embedding, adj, alpha
+
+    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
+        alpha, j, k = 1 - n / adj.n_epochs, adj.head[i], adj.tail[i]
+        current, other = head_embedding[j], tail_embedding[k]
+        coeff = self.clip(jax.grad(self.positive_loss, 1)(current, other))
+        if self.move_other:
+            tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
+        current, rng, *_ = jax.lax.fori_loop(
+                0, self.negative_sample_rate,
+                lambda p, a: self.negative_sample(*a),
+                (current + coeff * alpha, rng, tail_embedding, adj, alpha))
+        return rng, head_embedding.at[j].set(current), tail_embedding, adj
+
 if __name__ == "__main__":
     from nnd import npy_cache
     data, heap = npy_cache("test_step")
-    rng, lo, hi = Optimizer().optimize(*initialize(jax.random.key(0), heap, 3))
+    init = initialize(jax.random.key(0), heap, 3)
+    rng, lo, hi = RoteOptimizer().optimize(*init)
     print(lo)
 

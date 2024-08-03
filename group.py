@@ -215,7 +215,7 @@ def groupaux(*required, **optional):
             return obj
 
         def __repr__(self):
-            aux_data = (getattr(self, i) for i in order)
+            aux_data = zip(order, (getattr(self, i) for i in order))
             aux_data = ", ".join("=".join(map(str, i)) for i in aux_data)
             aux_data = f" with {aux_data}" if aux_data else ""
             return f"<{super().__repr__()}{aux_data} at {hex(id(self))}>"
