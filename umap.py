@@ -1,10 +1,10 @@
 from functools import partial
-from nnd import npy_cache, grouping, groupaux
 from jax.experimental import sparse
 from jax.scipy import optimize
 import jax.numpy as jnp
 import jax
-import debug
+
+from group import grouping, groupaux, outgroup
 
 class SmoothKNN(grouping("SmoothKNN", names=("sigma", "rho"))):
     pass
@@ -88,7 +88,7 @@ def noisy_scale(rng, data, hi=10.0, noise=0.0001):
 
 # weights depend on n_epochs
 @jax.tree_util.register_pytree_node_class
-class Adjacencies(groupaux("n_epochs"), grouping(
+class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
         "Adjacencies", names=("head", "tail", "weight"))):
     @classmethod
     def from_sparse(cls, graph, n_epochs=None):
@@ -99,15 +99,17 @@ class Adjacencies(groupaux("n_epochs"), grouping(
                 graph.data < jnp.max(graph.data) / norm, 0., graph.data)
         n_samples = n_epochs * graph.data / jnp.max(graph.data)
         weights = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
-        return graph, cls(*graph.indices.T, weights, n_epochs=n_epochs)
+        nulls = weights < 0
+        entries, order = weights.shape[0] - jnp.sum(nulls), jnp.argsort(nulls)
+        args = (*graph.indices[order].T, weights[order])
+        return graph, cls(*args, n_epochs=n_epochs, entries=entries)
 
-    @property
-    def indices(self):
-        return jnp.stack(self[:2]).T
+    def iter(self, callback, args):
+        return jax.lax.fori_loop(0, self.entries, callback, args)
 
-    @property
-    def data(self):
-        return self.weight
+    def filtered(self, cond, callback, *args):
+        return self.iter(lambda i, a: jax.lax.cond(cond(
+                self.weight[i]), callback, lambda i, *a: a, i, *a), args)
 
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, heap, n_components, n_epochs=None):
@@ -147,14 +149,13 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
 
 @partial(jax.jit, static_argnames=("move_other",))
 def optimize_embedding(
-        rng, embedding, graph, a, b, gamma=1., move_other=False,
+        rng, embedding, adj, a, b, gamma=1., move_other=False,
         negative_sample_rate=5):
     args = (embedding,) * 2
     def cond(freq, n):
         return n % freq < 1
     def epoch(i, n, rng, head_embedding, tail_embedding):
-        alpha = 1 - n / graph.n_epochs
-        j, k = graph.indices[i]
+        alpha, j, k = 1 - n / adj.n_epochs, adj.head[i], adj.tail[i]
         current, other = head_embedding[j], tail_embedding[k]
         dist2 = jnp.sum((current - other) ** 2)
         coeff = jnp.where(dist2 > 0, -2 * a * b * jnp.pow(dist2, b - 1) / (
@@ -166,7 +167,7 @@ def optimize_embedding(
         def negative(p, args):
             rng, head_embedding, tail_embedding = args
             rng, subkey = jax.random.split(rng)
-            k = jax.random.randint(subkey, (), 0, tail_embedding.shape[0] - 1)
+            k = jax.random.randint(subkey, (), 0, adj.entries)
             other = tail_embedding[k]
             dist2 = jnp.sum((current - other) ** 2)
             coeff = jnp.where(dist2 > 0, 2 * gamma * b / (0.001 + dist2) / (
@@ -176,17 +177,16 @@ def optimize_embedding(
             return rng, head_embedding, tail_embedding
         return jax.lax.fori_loop(0, negative_sample_rate, negative, (
                 rng, head_embedding, tail_embedding))
-    args = jax.lax.fori_loop(0, graph.n_epochs, lambda n, a: jax.lax.fori_loop(
-            0, graph.data.shape[0], lambda i, a: jax.lax.cond(
-                graph.data[i] > 0 & cond(graph.data[i], n),
-                lambda i, n, a: epoch(i, n, *a),
-                lambda i, n, a: a, i, n, a), a), (rng, *args))
+    args = jax.lax.fori_loop(
+            0, adj.n_epochs,
+            lambda n, a: adj.filtered(lambda x: cond(x, n), lambda i, *a: epoch(
+                i, n, *a), *a), (rng, *args))
     return args
 
 if __name__ == "__main__":
-    from nnd import test_step
+    from nnd import npy_cache
     data, heap = npy_cache("test_step")
-    rng, embed, adj = initialize(jax.random.key(0), heap, 3)
-    rng, lo, hi = optimize_embedding(rng, embed, adj, *fit_ab())
+    init = initialize(jax.random.key(0), heap, 3)
+    rng, lo, hi = optimize_embedding(*init, *fit_ab())
     print(lo)
 
