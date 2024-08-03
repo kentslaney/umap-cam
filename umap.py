@@ -111,8 +111,13 @@ class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
         return self.iter(lambda i, a: jax.lax.cond(cond(
                 self.weight[i]), callback, lambda i, *a: a, i, *a), args)
 
+    def sample(self, rng):
+        rng, subkey = jax.random.split(rng)
+        return rng, jax.random.randint(subkey, (), 0, self.entries)
+
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, heap, n_components, n_epochs=None):
+    assert n_components <= heap.shape[2]
     graph = simplices(memberships(heap))
     graph, adj = Adjacencies.from_sparse(graph, n_epochs)
     rng, embedding = noisy_scale(*sparse_pca(rng, graph, n_components))
@@ -160,19 +165,18 @@ def optimize_embedding(
         dist2 = jnp.sum((current - other) ** 2)
         coeff = jnp.where(dist2 > 0, -2 * a * b * jnp.pow(dist2, b - 1) / (
                 a * jnp.pow(dist2, b) + 1), 0)
-        coeff = jnp.clip(coeff * (current - other))
+        coeff = jnp.clip(coeff * (current - other), -4, 4)
         head_embedding = head_embedding.at[j].set(current + coeff * alpha)
         if move_other:
             tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
         def negative(p, args):
             rng, head_embedding, tail_embedding = args
-            rng, subkey = jax.random.split(rng)
-            k = jax.random.randint(subkey, (), 0, adj.entries)
+            rng, k = adj.sample(rng)
             other = tail_embedding[k]
             dist2 = jnp.sum((current - other) ** 2)
             coeff = jnp.where(dist2 > 0, 2 * gamma * b / (0.001 + dist2) / (
                     a * jnp.pow(dist2, b) + 1), 0)
-            coeff = jnp.clip(coeff * (current - other))
+            coeff = jnp.clip(coeff * (current - other), -4, 4)
             head_embedding = head_embedding.at[j].set(current + coeff * alpha)
             return rng, head_embedding, tail_embedding
         return jax.lax.fori_loop(0, negative_sample_rate, negative, (
