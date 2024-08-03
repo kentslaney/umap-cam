@@ -95,11 +95,11 @@ class Adjacencies(groupaux("n_epochs"), grouping(
         default_epochs = 500 if graph.shape[0] <= 10_000 else 200
         n_epochs = default_epochs if n_epochs is None else n_epochs
         norm = n_epochs if n_epochs > 10 else default_epochs
-        data = jnp.where(
+        graph.data = jnp.where(
                 graph.data < jnp.max(graph.data) / norm, 0., graph.data)
         n_samples = n_epochs * graph.data / jnp.max(graph.data)
-        data = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
-        return cls(*graph.indices.T, data, n_epochs=n_epochs)
+        weights = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
+        return graph, cls(*graph.indices.T, weights, n_epochs=n_epochs)
 
     @property
     def indices(self):
@@ -112,8 +112,9 @@ class Adjacencies(groupaux("n_epochs"), grouping(
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, heap, n_components, n_epochs=None):
     graph = simplices(memberships(heap))
+    graph, adj = Adjacencies.from_sparse(graph, n_epochs)
     rng, embedding = noisy_scale(*sparse_pca(rng, graph, n_components))
-    return rng, embedding, Adjacencies.from_sparse(graph, n_epochs)
+    return rng, embedding, adj
 
 """
 from the original documentation:
