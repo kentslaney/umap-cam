@@ -172,8 +172,8 @@ class Optimizer:
 
     def phi(self, current, other):
         dist = self.dist(current, other)
-        embed = 1 / (1 + self.a * dist ** self.b)
-        return jnp.where(dist > 0, embed, 0)
+        dist = jnp.where(dist > 0, dist, 0)
+        return 1 / (1 + self.a * dist ** self.b)
 
     def positive_loss(self, current, other):
         return jnp.log(self.phi(current, other))
