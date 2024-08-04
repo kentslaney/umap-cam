@@ -212,7 +212,7 @@ class Optimizer(BaseOptimizer):
         loss, rng, *_ = jax.lax.fori_loop(
                 0, self.negative_sample_rate,
                 lambda p, a: self.negative_sample(*a),
-                (positive, rng, current, tail_embedding))
+                (positive, rng, current, jax.lax.stop_gradient(tail_embedding)))
         return loss, rng
 
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
