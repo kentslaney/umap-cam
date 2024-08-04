@@ -148,7 +148,7 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
     y = jnp.where(x < min_dist, 1., jnp.exp(-(x - min_dist) / spread))
     return optimize.minimize(lsq, jnp.ones((ndim,)), method="BFGS")[0]
 
-class Optimizer:
+class BaseOptimizer:
     order = (("a", "b"), ("move_other", "gamma", "negative_sample_rate"))
     def __init__(
             self, spread=1, min_dist=0.1, a=None, b=None, move_other=False,
@@ -181,10 +181,6 @@ class Optimizer:
     def negative_loss(self, current, other):
         return self.gamma * jnp.log(1 - self.phi(current, other))
 
-    @staticmethod
-    def clip(grad):
-        return jnp.clip(grad, -4, 4)
-
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
         raise NotImplementedError
 
@@ -198,31 +194,41 @@ class Optimizer:
                 *a), (rng, *args, adj))[:-1]
 
 @jax.tree_util.register_pytree_node_class
-class RoteOptimizer(Optimizer):
-    def negative_sample(self, current, rng, tail_embedding, adj, alpha):
+class Optimizer(BaseOptimizer):
+    @staticmethod
+    def clip(grad):
+        return jnp.clip(grad, -4, 4)
+
+    def negative_sample(self, loss, rng, current, tail_embedding):
         rng, subkey = jax.random.split(rng)
         k = jax.random.randint(subkey, (), 0, tail_embedding.shape[0])
         other = tail_embedding[k]
-        coeff = self.clip(jax.grad(self.negative_loss, 1)(current, other))
-        # no gradient accumulation to match per-sample updates in the original
-        return current + coeff * alpha, rng, tail_embedding, adj, alpha
+        loss += self.negative_loss(current, other)
+        return loss, rng, current, tail_embedding
 
-    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
-        alpha, j, k = 1 - n / adj.n_epochs, adj.head[i], adj.tail[i]
+    def sample(self, head_embedding, tail_embedding, rng, j, k):
         current, other = head_embedding[j], tail_embedding[k]
-        coeff = self.clip(jax.grad(self.positive_loss, 1)(current, other))
-        if self.move_other:
-            tail_embedding = tail_embedding.at[k].set(other - coeff * alpha)
-        current, rng, *_ = jax.lax.fori_loop(
+        positive = self.positive_loss(current, other)
+        loss, rng, *_ = jax.lax.fori_loop(
                 0, self.negative_sample_rate,
                 lambda p, a: self.negative_sample(*a),
-                (current + coeff * alpha, rng, tail_embedding, adj, alpha))
-        return rng, head_embedding.at[j].set(current), tail_embedding, adj
+                (positive, rng, current, tail_embedding))
+        return loss, rng
+
+    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
+        alpha = 1 - n / adj.n_epochs
+        grad, rng = jax.grad(self.sample, (0, 1), True)(
+                head_embedding, tail_embedding, rng, adj.head[i], adj.tail[i])
+        positive, negative = map(self.clip, grad)
+        head_embedding += positive * alpha
+        if self.move_other:
+            tail_embedding += negative * alpha
+        return rng, head_embedding, tail_embedding, adj
 
 if __name__ == "__main__":
     from nnd import npy_cache
     data, heap = npy_cache("test_step")
     init = initialize(jax.random.key(0), heap, 3)
-    rng, lo, hi = RoteOptimizer().optimize(*init)
+    rng, lo, hi = Optimizer().optimize(*init)
     print(lo)
 
