@@ -78,9 +78,11 @@ def sparse_pca(rng, arr, k):
     theta, u, i = sparse.sparsify(sparse.linalg.lobpcg_standard)(arr, x)
     return rng, u
 
+scale = 10
+
 # not specified in the paper, but in the official implementation, with the note:
 # we add a little noise to avoid local minima for optimization to come
-def noisy_scale(rng, data, hi=10.0, noise=0.0001):
+def noisy_scale(rng, data, hi=1.0 * scale, noise=0.00001 * scale):
     data *= hi / jnp.max(jnp.abs(data))
     data += noise * jax.random.normal(rng, data.shape)
     lo = jnp.min(data, 0)
@@ -134,12 +136,12 @@ from the original documentation:
         this determines how clustered/clumped the embedded points are.
 """
 @partial(jax.jit, static_argnames=("a", "b"))
-def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
+def fit_ab(spread=0.1 * scale, min_dist=0.01 * scale, a=None, b=None):
     ndim = int(a is None) + int(b is None)
     if ndim == 0:
         return a, b
     def curve(x, a, b):
-        return 1.0 / (1.0 + a * x ** (2 * b))
+        return 1.0 / (1.0 + a * (10 / scale * x) ** (2 * b))
     def lsq(ab):
         _a, _b = ab[0] if a is None else a, ab[1] if b is None else b
         return jnp.sum((curve(x, ab[0], ab[1]) - y) ** 2)
@@ -151,8 +153,8 @@ def fit_ab(spread=1.0, min_dist=0.1, a=None, b=None):
 class BaseOptimizer:
     order = (("a", "b"), ("move_other", "gamma", "negative_sample_rate"))
     def __init__(
-            self, spread=1, min_dist=0.1, a=None, b=None, move_other=False,
-            gamma=1, negative_sample_rate=5):
+            self, spread=0.1 * scale, min_dist=0.01 * scale, a=None, b=None,
+            move_other=False, gamma=1, negative_sample_rate=5):
         self.a, self.b = fit_ab(
                 spread, min_dist, a, b) if a is None or b is None else (a, b)
         self.move_other = move_other
@@ -168,7 +170,7 @@ class BaseOptimizer:
 
     @staticmethod
     def dist(current, other):
-        return jnp.sum((current - other) ** 2)
+        return (10 / scale) ** 2 * jnp.sum((current - other) ** 2)
 
     def phi(self, current, other):
         dist = self.dist(current, other)
@@ -197,7 +199,7 @@ class BaseOptimizer:
 class Optimizer(BaseOptimizer):
     @staticmethod
     def clip(grad):
-        return jnp.clip(grad, -4, 4)
+        return jnp.clip(grad, -0.04 * scale ** 2, 0.04 * scale ** 2)
 
     def negative_sample(self, loss, rng, current, tail_embedding):
         rng, subkey = jax.random.split(rng)
@@ -225,10 +227,37 @@ class Optimizer(BaseOptimizer):
             tail_embedding += negative * alpha
         return rng, head_embedding, tail_embedding, adj
 
-if __name__ == "__main__":
-    from nnd import npy_cache
-    data, heap = npy_cache("test_step")
-    init = initialize(jax.random.key(0), heap, 3)
-    rng, lo, hi = Optimizer().optimize(*init)
-    print(lo)
+def compare(arr0, arr1):
+    assert arr0.shape == arr1.shape
+    rows = zip(str(arr0).split("\n"), str(arr1).split("\n"))
+    print("\n".join((" " * 4).join(i) for i in rows))
 
+if __name__ == "__main__":
+    from sklearn.datasets import load_digits
+    from nnd import aknn, NNDHeap
+    import pathlib
+    path = pathlib.Path.cwd() / "digits.npz"
+    if not path.is_file():
+        digits = load_digits()
+        rng = jax.random.key(0)
+        rng, heap = aknn(10, rng, digits.data)
+        jnp.savez(path, rng, heap)
+    else:
+        rng, heap = jnp.load(path, allow_pickle=True).values()
+        heap = NNDHeap.tree_unflatten((), heap)
+
+    rng = jax.random.key(0)
+    rng, embed, adj = initialize(rng, heap, 2)
+    rng, lo, hi = Optimizer().optimize(rng, embed, adj)
+
+    # from nnd import npy_cache
+    # data, heap = npy_cache("test_step")
+    # init = initialize(jax.random.key(0), heap, 3)
+    # rng, lo, hi = Optimizer().optimize(*init)
+    # print(lo)
+
+    import matplotlib.pyplot as plt
+    fig0 = plt.figure()
+    ax0 = fig0.add_subplot(1, 1, 1)
+    ax0.scatter(*lo.T)
+    plt.show()
