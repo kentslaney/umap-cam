@@ -16,36 +16,36 @@ class Heap(Group):
         i1 = i1 if isinstance(i1, tuple) else (i1,)
         return self.at[:, *i0].set(self[:, *i1]).at[:, *i1].set(self[:, *i0])
 
-    def sifted(self, i):
+    def sifted(self, i, bound=None):
+        bound = self.order.shape[0] if bound is None else bound
         sel = (lambda x, y: x, lambda x, y: y)
         def cond(args):
             heap, i, broken = args
-            return ~broken & (i * 2 + 1 < heap.order.shape[0])
+            return ~broken & (i * 2 + 1 < bound)
 
         def inner(args):
             heap, i, broken = args
             left, right, swap = i * 2 + 1, i * 2 + 2, i
             lpivot = heap.order[swap] < heap.order[left]
             swap = jax.lax.cond(lpivot, *sel, left,  swap)
-            rpivot = (right < heap.order.shape[0]) & (
-                    heap.order[swap] < heap.order[right])
+            rpivot = (right < bound) & (heap.order[swap] < heap.order[right])
             swap = jax.lax.cond(rpivot, *sel, right, swap)
 
             broken = swap == i
             heap, i = jax.lax.cond(
-                    broken,
-                    lambda heap, i, swap: (heap, i),
+                    broken, lambda heap, i, swap: (heap, i),
                     lambda heap, i, swap: (heap.swapped(swap, i), swap),
                     *(heap, i, swap))
             return heap, i, broken
         return jax.lax.while_loop(cond, inner, (self, i, False))[0]
 
     def ascending(self):
-        def inner(i, heap):
-            for j in range(self.shape[2] - 1, 0, -1):
-                heap = heap.swapped((i, 0), (i, j)).at[:, i, :j].sifted(0)
-            return heap
-        return jax.lax.fori_loop(0, self.shape[1], inner, self)
+        def outer(i, heap):
+            def inner(j, heap):
+                j = self.shape[2] - 1 - j
+                return heap.swapped((i, 0), (i, j)).at[:, i].sifted(0, j)
+            return jax.lax.fori_loop(0, self.shape[2], inner, heap)
+        return jax.lax.fori_loop(0, self.shape[1], outer, self)
 
     # low memory but O(size); PyNNDescent uses python sets in high memory mode
     # most devices probably vectorize it since it's a contiguous chunk of int32s
@@ -97,10 +97,10 @@ class NNDHeap(Heap, grouping(
     @partial(jax.jit, static_argnames=('limit',))
     def build(self, limit, rng):
         def init(i, args):
-            for j in range(self.shape[2]):
+            def loop(j, args):
                 conts = self.indices[i, j] < 0
-                args = jax.lax.cond(conts, lambda *a: a[2:], inner, j, i, *args)
-            return args
+                return jax.lax.cond(conts, lambda *a: a[2:], inner, j, i, *args)
+            return jax.lax.fori_loop(0, self.shape[2], loop, args)
         def inner(j, i, heap, rng):
             rng, subkey = jax.random.split(rng)
             d = jax.random.uniform(subkey)
@@ -117,11 +117,11 @@ class NNDHeap(Heap, grouping(
         heap, rng = jax.lax.fori_loop(0, self.shape[1], init, (self.grouped(
                 clone, clone, names=("old", "new")), rng))
         def end(i, cur):
-            for j in range(limit):
+            def loop(j, cur):
                 mask = cur.indices[i] == heap.new.indices[i, j]
                 # reset flag
-                cur = cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
-            return cur
+                return cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
+            return jax.lax.fori_loop(0, limit, loop, cur)
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
         return cur, NNDCandidates(*heap[:, "indices"]), rng
 

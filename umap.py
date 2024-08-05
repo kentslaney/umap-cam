@@ -236,16 +236,17 @@ if __name__ == "__main__":
     from sklearn.datasets import load_digits
     from nnd import aknn, NNDHeap
     import pathlib
-    path = pathlib.Path.cwd() / "digits.npz"
+    path = pathlib.Path.cwd() / "digits.npy"
     if not path.is_file():
         digits = load_digits()
         rng = jax.random.key(0)
-        rng, heap = aknn(10, rng, digits.data)
-        jnp.savez(path, rng, heap)
+        rng, heap = aknn(30, rng, digits.data)
+        jnp.save(path, heap)
     else:
-        rng, heap = jnp.load(path, allow_pickle=True).values()
+        heap = jnp.load(path)
         heap = NNDHeap.tree_unflatten((), heap)
 
+    # exit(0)
     rng = jax.random.key(0)
     rng, embed, adj = initialize(rng, heap, 2)
     rng, lo, hi = Optimizer().optimize(rng, embed, adj)
