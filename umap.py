@@ -70,10 +70,10 @@ def simplices(members, fuzziness=1.):
     data = members.distances.flatten()
     bidirectional = members.flags.flatten()
     def t(idx, flag):
-        lookup, row = members[:2, idx[0]]
-        first = jnp.argmax(row == idx[1])
+        lookup, row = members[:2, idx[1]]
+        first = jnp.argmax(row == idx[0])
         value = jnp.where(first > 0, lookup[first], jnp.where(
-                row[0] == idx[1], lookup[0], 0))
+                row[0] == idx[0], lookup[0], 0))
         return jnp.where(flag, value, 0)
     transpose = jax.vmap(t)(idx, bidirectional)
     def op(m, t):
@@ -84,8 +84,7 @@ def simplices(members, fuzziness=1.):
     idx = jnp.concatenate((idx, idx[:, ::-1]))
     res = jnp.concatenate((res, fuzziness * flip))
     return sparse.BCOO(
-            (res, idx), shape=(members.shape[1], members.shape[1]),
-            unique_indices=True)
+            (res, idx), shape=(members.shape[1], members.shape[1]))
 
 @partial(jax.jit, static_argnames=("k",))
 def sparse_pca(rng, arr, k):
@@ -113,21 +112,22 @@ def noisy_scale(rng, data, hi=1.0 * scale, noise=0.00001 * scale):
 
 # weights depend on n_epochs
 @jax.tree_util.register_pytree_node_class
-class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
+class Adjacencies(outgroup("entries", "size"), groupaux("n_epochs"), grouping(
         "Adjacencies", names=("head", "tail", "weight"))):
     @classmethod
     def from_sparse(cls, graph, n_epochs=None):
         default_epochs = 500 if graph.shape[0] <= 10_000 else 200
         n_epochs = default_epochs if n_epochs is None else n_epochs
         norm = n_epochs if n_epochs > 10 else default_epochs
-        graph.data = jnp.where(
+        data = jnp.where(
                 graph.data < jnp.max(graph.data) / norm, 0., graph.data)
-        n_samples = n_epochs * graph.data / jnp.max(graph.data)
+        n_samples = n_epochs * data / jnp.max(data)
         weights = jnp.where(n_samples > 0, n_epochs / n_samples, -1)
         nulls = weights < 0
         entries, order = weights.shape[0] - jnp.sum(nulls), jnp.argsort(nulls)
         args = (*graph.indices[order].T, weights[order])
-        return graph, cls(*args, n_epochs=n_epochs, entries=entries)
+        return cls(
+                *args, n_epochs=n_epochs, entries=entries, size=graph.shape[0])
 
     def iter(self, callback, args):
         return jax.lax.fori_loop(0, self.entries, callback, args)
@@ -136,11 +136,27 @@ class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
         return self.iter(lambda i, a: jax.lax.cond(cond(
                 self.weight[i]), callback, lambda i, *a: a, i, *a), args)
 
+    @classmethod
+    def literal(cls, graph):
+        nulls = graph.data == 0
+        order = jnp.argsort(nulls)
+        entries = graph.data.shape[0] - jnp.sum(nulls)
+        return cls(
+                *graph.indices[order].T, graph.data[order], size=graph.shape[0],
+                entries=entries, n_epochs=0)
+
+    def sorted(self):
+        order = jnp.argsort(self.head * self.size + self.tail)
+        _, order = jax.lax.sort_key_val(order >= self.entries, order)
+        return self.__class__(
+                self.head[order], self.tail[order], self.weight[order],
+                n_epochs=self.n_epochs, entries=self.entries, size=self.size)
+
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
 def initialize(rng, data, heap, n_components, n_epochs=None):
     assert n_components <= heap.shape[2]
     graph = simplices(memberships(heap))
-    _, adj = Adjacencies.from_sparse(graph, n_epochs)
+    adj = Adjacencies.from_sparse(graph, n_epochs)
     rng, embedding = noisy_scale(*dense_pca(rng, data, n_components))
     return rng, embedding, adj
 
@@ -178,7 +194,7 @@ class BaseOptimizer:
             "move_other", "gamma", "negative_sample_rate", "verbose"))
     def __init__(
             self, spread=0.1 * scale, min_dist=0.01 * scale, a=None, b=None,
-            move_other=False, gamma=1, negative_sample_rate=5, verbose=True):
+            move_other=True, gamma=1, negative_sample_rate=5, verbose=True):
         self.a, self.b = fit_ab(
                 spread, min_dist, a, b) if a is None or b is None else (a, b)
         self.move_other, self.verbose = move_other, verbose
@@ -275,9 +291,9 @@ if __name__ == "__main__":
     rng, lo, hi = Optimizer().optimize(rng, embed, adj)
 
     # from nnd import npy_cache
-    # data, heap = npy_cache("test_step")
-    # init = initialize(jax.random.key(0), data, heap, 2)
-    # rng, lo, hi = Optimizer().optimize(*init)
+    # data, heap = npy_cache("test_step", neighbors=14)
+    # rng, embed, adj = initialize(jax.random.key(0), data, heap, 2)
+    # rng, lo, hi = Optimizer().optimize(rng, embed, adj)
     # print(lo)
 
     import matplotlib.pyplot as plt
