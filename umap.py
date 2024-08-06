@@ -100,7 +100,7 @@ def dense_pca(rng, arr, k):
     u, s, vh = linalg.svd(arr, full_matrices=False)
     return rng, u[:, :k] * s[:k]
 
-scale = 10
+scale = 1
 
 # not specified in the paper, but in the official implementation, with the note:
 # we add a little noise to avoid local minima for optimization to come
@@ -221,7 +221,9 @@ class BaseOptimizer:
         return jnp.log(self.phi(current, other))
 
     def negative_loss(self, current, other):
-        return self.gamma * jnp.log(1 - self.phi(current, other))
+        phi = self.phi(current, other)
+        phi = jnp.where(phi < 1, phi, 0)
+        return self.gamma * jnp.log(1 - phi)
 
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
         raise NotImplementedError
@@ -273,28 +275,29 @@ class Optimizer(BaseOptimizer):
         return rng, head_embedding, tail_embedding, adj
 
 if __name__ == "__main__":
-    from sklearn.datasets import load_digits
-    from nnd import aknn, NNDHeap
-    import pathlib
-    data = load_digits().data
-    path = pathlib.Path.cwd() / "digits.npy"
-    if not path.is_file():
-        rng = jax.random.key(0)
-        rng, heap = aknn(14, rng, data)
-        jnp.save(path, heap)
-    else:
-        heap = jnp.load(path)
-        heap = NNDHeap.tree_unflatten((), heap)
-
-    rng = jax.random.key(0)
-    rng, embed, adj = initialize(rng, data, heap, 2)
-    rng, lo, hi = Optimizer().optimize(rng, embed, adj)
-
-    # from nnd import npy_cache
-    # data, heap = npy_cache("test_step", neighbors=14)
-    # rng, embed, adj = initialize(jax.random.key(0), data, heap, 2)
+    # from sklearn.datasets import load_digits
+    # from nnd import aknn, NNDHeap
+    # import pathlib
+    # data = load_digits().data
+    # path = pathlib.Path.cwd() / "digits.npy"
+    # if not path.is_file():
+    #     rng = jax.random.key(0)
+    #     rng, heap = aknn(14, rng, data)
+    #     jnp.save(path, heap)
+    # else:
+    #     heap = jnp.load(path)
+    #     heap = NNDHeap.tree_unflatten((), heap)
+    #
+    # rng = jax.random.key(0)
+    # rng, embed, adj = initialize(rng, data, heap, 2)
     # rng, lo, hi = Optimizer().optimize(rng, embed, adj)
+
+    from nnd import npy_cache
+    data, heap = npy_cache("test_step", neighbors=14)
+    rng, embed, adj = initialize(jax.random.key(0), data, heap, 2)
+    rng, lo, hi = Optimizer().optimize(rng, embed, adj)
     # print(lo)
+    # exit(0)
 
     import matplotlib.pyplot as plt
     fig0 = plt.figure()
