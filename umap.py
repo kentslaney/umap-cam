@@ -1,6 +1,6 @@
 from functools import partial
 from jax.experimental import sparse
-from jax.scipy import optimize
+from jax.scipy import optimize, linalg
 import jax.numpy as jnp
 import jax
 
@@ -95,6 +95,10 @@ def sparse_pca(rng, arr, k):
     theta, u, i = sparse.sparsify(sparse.linalg.lobpcg_standard)(arr, x)
     return rng, u
 
+def dense_pca(rng, arr, k):
+    u, s, vh = linalg.svd(arr, full_matrices=False)
+    return rng, u[:, :k]
+
 scale = 10
 
 # not specified in the paper, but in the official implementation, with the note:
@@ -131,11 +135,11 @@ class Adjacencies(outgroup("entries"), groupaux("n_epochs"), grouping(
                 self.weight[i]), callback, lambda i, *a: a, i, *a), args)
 
 @partial(jax.jit, static_argnames=("n_components", "n_epochs"))
-def initialize(rng, heap, n_components, n_epochs=None):
+def initialize(rng, data, heap, n_components, n_epochs=None):
     assert n_components <= heap.shape[2]
     graph = simplices(memberships(heap))
-    graph, adj = Adjacencies.from_sparse(graph, n_epochs)
-    rng, embedding = noisy_scale(*sparse_pca(rng, graph, n_components))
+    _, adj = Adjacencies.from_sparse(graph, n_epochs)
+    rng, embedding = noisy_scale(*dense_pca(rng, data, n_components))
     return rng, embedding, adj
 
 """
@@ -208,9 +212,11 @@ class BaseOptimizer:
         args = (embedding,) * 2
         def cond(freq, n):
             return n % freq < 1
-        return jax.lax.fori_loop(0, adj.n_epochs, lambda n, a: adj.filtered(
-                lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a),
-                *a), (rng, *args, adj))[:-1]
+        def loop(n, a):
+            # jax.debug.print("{}", n)
+            return adj.filtered(
+                lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a), *a)
+        return jax.lax.fori_loop(0, adj.n_epochs, loop, (rng, *args, adj))[:-1]
 
 @jax.tree_util.register_pytree_node_class
 class Optimizer(BaseOptimizer):
@@ -248,23 +254,23 @@ if __name__ == "__main__":
     from sklearn.datasets import load_digits
     from nnd import aknn, NNDHeap
     import pathlib
+    data = load_digits().data
     path = pathlib.Path.cwd() / "digits.npy"
     if not path.is_file():
-        digits = load_digits()
         rng = jax.random.key(0)
-        rng, heap = aknn(14, rng, digits.data)
+        rng, heap = aknn(14, rng, data)
         jnp.save(path, heap)
     else:
         heap = jnp.load(path)
         heap = NNDHeap.tree_unflatten((), heap)
 
     rng = jax.random.key(0)
-    rng, embed, adj = initialize(rng, heap, 2)
+    rng, embed, adj = initialize(rng, data, heap, 2)
     rng, lo, hi = Optimizer().optimize(rng, embed, adj)
 
     # from nnd import npy_cache
     # data, heap = npy_cache("test_step")
-    # init = initialize(jax.random.key(0), heap, 2)
+    # init = initialize(jax.random.key(0), data, heap, 2)
     # rng, lo, hi = Optimizer().optimize(*init)
     # print(lo)
 
