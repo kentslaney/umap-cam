@@ -57,17 +57,34 @@ def smooth_knn(distances, n_0=64, local_connectivity=1.0, bandwidth=1.0):
 def memberships(knn, smoothed=None):
     smoothed = smooth_knn(knn.distances) if smoothed is None else smoothed
     smoothed = smoothed[:, :, None]
-    res = jnp.exp((knn.distances - smoothed.rho) / smoothed.sigma)
-    return knn.at["distances"].set(res)
+    res = jnp.exp(-(knn.distances - smoothed.rho) / smoothed.sigma)
+    res = knn.at["distances"].set(res)
+    bound = knn.distances[knn.indices.flatten(), -1].reshape(knn.indices.shape)
+    return res.at["flags"].set(knn.distances <= bound)
 
-@jax.jit
-def simplices(members):
+# @jax.jit
+def simplices(members, fuzziness=1.):
     idx = jnp.arange(members.shape[1])[:, None]
     idx = jnp.broadcast_to(idx, members.shape[1:])
     idx = jnp.stack((idx, members.indices), 2).reshape(-1, 2)
     data = members.distances.flatten()
+    bidirectional = members.flags.flatten()
+    def t(idx, flag):
+        lookup, row = members[:2, idx[0]]
+        first = jnp.argmax(row == idx[1])
+        value = jnp.where(first > 0, lookup[first], jnp.where(
+                row[0] == idx[1], lookup[0], 0))
+        return jnp.where(flag, value, 0)
+    transpose = jax.vmap(t)(idx, bidirectional)
+    def op(m, t):
+        p = m * t
+        return fuzziness * (m + t - p) + (1 - fuzziness) * p
+    res = jax.vmap(op)(data, transpose)
+    flip = jnp.where(transpose == 0, data, 0)
+    idx = jnp.concatenate((idx, idx[:, ::-1]))
+    res = jnp.concatenate((res, fuzziness * flip))
     return sparse.BCOO(
-            (data, idx), shape=(members.shape[1], members.shape[1]),
+            (res, idx), shape=(members.shape[1], members.shape[1]),
             unique_indices=True)
 
 @partial(jax.jit, static_argnames=("k",))
@@ -227,11 +244,6 @@ class Optimizer(BaseOptimizer):
             tail_embedding += negative * alpha
         return rng, head_embedding, tail_embedding, adj
 
-def compare(arr0, arr1):
-    assert arr0.shape == arr1.shape
-    rows = zip(str(arr0).split("\n"), str(arr1).split("\n"))
-    print("\n".join((" " * 4).join(i) for i in rows))
-
 if __name__ == "__main__":
     from sklearn.datasets import load_digits
     from nnd import aknn, NNDHeap
@@ -240,20 +252,19 @@ if __name__ == "__main__":
     if not path.is_file():
         digits = load_digits()
         rng = jax.random.key(0)
-        rng, heap = aknn(30, rng, digits.data)
+        rng, heap = aknn(14, rng, digits.data)
         jnp.save(path, heap)
     else:
         heap = jnp.load(path)
         heap = NNDHeap.tree_unflatten((), heap)
 
-    # exit(0)
     rng = jax.random.key(0)
     rng, embed, adj = initialize(rng, heap, 2)
     rng, lo, hi = Optimizer().optimize(rng, embed, adj)
 
     # from nnd import npy_cache
     # data, heap = npy_cache("test_step")
-    # init = initialize(jax.random.key(0), heap, 3)
+    # init = initialize(jax.random.key(0), heap, 2)
     # rng, lo, hi = Optimizer().optimize(*init)
     # print(lo)
 
