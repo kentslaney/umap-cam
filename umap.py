@@ -62,7 +62,7 @@ def memberships(knn, smoothed=None):
     bound = knn.distances[knn.indices.flatten(), -1].reshape(knn.indices.shape)
     return res.at["flags"].set(knn.distances <= bound)
 
-# @jax.jit
+@jax.jit
 def simplices(members, fuzziness=1.):
     idx = jnp.arange(members.shape[1])[:, None]
     idx = jnp.broadcast_to(idx, members.shape[1:])
