@@ -93,11 +93,13 @@ def sparse_pca(rng, arr, k):
     rng, subkey = jax.random.split(rng)
     x = jax.random.normal(subkey, (arr.shape[0], k))
     theta, u, i = sparse.sparsify(sparse.linalg.lobpcg_standard)(arr, x)
-    return rng, u
+    return rng, u # different than below
 
 def dense_pca(rng, arr, k):
+    # FP errors accumulate once arr is large enough, but other problems first
+    arr -= jnp.mean(arr, axis=0, keepdims=True)
     u, s, vh = linalg.svd(arr, full_matrices=False)
-    return rng, u[:, :k]
+    return rng, u[:, :k] * s[:k]
 
 scale = 10
 
@@ -172,13 +174,14 @@ def fit_ab(spread=0.1 * scale, min_dist=0.01 * scale, a=None, b=None):
     return optimize.minimize(lsq, jnp.ones((ndim,)), method="BFGS")[0]
 
 class BaseOptimizer:
-    order = (("a", "b"), ("move_other", "gamma", "negative_sample_rate"))
+    order = (("a", "b"), (
+            "move_other", "gamma", "negative_sample_rate", "verbose"))
     def __init__(
             self, spread=0.1 * scale, min_dist=0.01 * scale, a=None, b=None,
-            move_other=False, gamma=1, negative_sample_rate=5):
+            move_other=False, gamma=1, negative_sample_rate=5, verbose=True):
         self.a, self.b = fit_ab(
                 spread, min_dist, a, b) if a is None or b is None else (a, b)
-        self.move_other = move_other
+        self.move_other, self.verbose = move_other, verbose
         self.gamma, self.negative_sample_rate = gamma, negative_sample_rate
 
     def tree_flatten(self):
@@ -212,8 +215,11 @@ class BaseOptimizer:
         args = (embedding,) * 2
         def cond(freq, n):
             return n % freq < 1
+        def update(n):
+            print("", n, end="\r")
         def loop(n, a):
-            # jax.debug.print("{}", n)
+            if self.verbose:
+                jax.debug.callback(update, n)
             return adj.filtered(
                 lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a), *a)
         return jax.lax.fori_loop(0, adj.n_epochs, loop, (rng, *args, adj))[:-1]
