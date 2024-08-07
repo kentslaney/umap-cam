@@ -128,6 +128,13 @@ class Group:
     def ref(self, key):
         return self._fields.index(key) if isinstance(key, str) else key
 
+    @classmethod
+    def where(cls, cond, x, y):
+        assert x.aux_data == y.aux_data
+        (xc, xa), (yc, _) = x.tree_flatten(), y.tree_flatten()
+        return cls.tree_unflatten(xa, tuple(
+                jnp.where(cond, i, j) for i, j in zip(xc, yc)))
+
 class Named:
     def __repr__(self):
         if not any("\n" in repr(i) for i in self):

@@ -77,7 +77,7 @@ class Heap(Group):
             loob = left >= heap.order.shape[0]
             roob = right >= heap.order.shape[0]
             flipped = lambda: heap.order[left] >= heap.order[right]
-            pivot = jax.lax.cond(roob | flipped(), lambda: left, lambda: right)
+            pivot = jnp.where(roob | flipped(), left, right)
             swapping = ~loob & (ins.order < heap.order[pivot])
             return (swapping,) + jax.lax.cond(
                     swapping,
@@ -241,7 +241,7 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
 TestingConfig = namedtuple(
         "Config",
         ("points", "neighbors", "max_candidates", "n_trees", "ndim", "seed"),
-        defaults=(128, 8, 4, 2, 1, 0))
+        defaults=(512, 8, 4, 2, 8, 0))
 
 def test_step(*a, **kw):
     setup = TestingConfig(*a, **kw)
