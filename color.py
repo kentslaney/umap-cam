@@ -176,15 +176,18 @@ class ViewingConditions:
     @property
     def grad(self):
         if self._grad is None:
-            self._grad = jax.vmap(
-                    lambda x: jax.jacobian(self.op)(x[:, None])[:, 0, :, 0])
+            @jax.vmap
+            def _grad(x):
+                res = jax.jacobian(self.op)(x[:, None])[:, 0, :, 0]
+                return jnp.where(jnp.all(x == 0.), jnp.eye(3), res)
+            self._grad = _grad
         return lambda x: self._grad(x.transpose())
 
     def projected(self, rgb):
-        oob = jnp.any((rgb < 0) + (rgb > 1), axis=0)
+        oob = jnp.any((rgb < 0) | (rgb > 1), axis=0)
         clipped = jnp.clip(rgb, 0, 1)
         res = self.op(clipped)
-        delta = clipped - rgb
+        delta = rgb - clipped
         grad = self.grad(clipped)
         eps = jax.lax.dot_general(grad, delta, (((2,), (0,)), ((0,), (1,))))
         return res + jnp.select([oob, True], [eps.transpose(), 0])
@@ -206,6 +209,25 @@ class ViewingConditions:
         x, y = map(jnp.asarray, (jab0, jab1))
         eprime = jnp.sqrt(jnp.sum((x - y) ** 2))
         return 1.41 * eprime ** 0.63
+
+def domain_bounds(lo=0, hi=1, points=100):
+    inputs = jnp.linspace(lo, hi, points + 1)
+    shape = (inputs.shape[0],) * 2
+    row = jnp.broadcast_to(inputs[:, None], shape)
+    col = jnp.broadcast_to(inputs[None, :], shape)
+    lo, hi = jnp.full(shape, lo), jnp.full(shape, hi)
+    faces = (
+            (lo, row, col), (row, lo, col), (row, col, lo),
+            (hi, row, col), (row, hi, col), (row, col, hi))
+    return jnp.concatenate(tuple(map(
+            lambda x: jnp.stack(x).T.reshape(-1, 3), faces)))
+
+def test_domain():
+    vc = ViewingConditions()
+    rgb = domain_bounds(-0.1, 1.1, 120)
+    res = vc.broadcast(rgb)
+    failures = jnp.any(jnp.isnan(res) | jnp.isinf(res), axis=1)
+    assert jnp.sum(failures) == 0
 
 if __name__ == "__main__":
     vc = ViewingConditions()
