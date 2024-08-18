@@ -50,9 +50,19 @@ class Heap(Group):
     # low memory but O(size); PyNNDescent uses python sets in high memory mode
     # most devices probably vectorize it since it's a contiguous chunk of int32s
     # a binary search might be worth profiling but GPU jobs are usually IO bound
+    # rapids uses bloom filters (even though they're removing elements?)
     def check(self, ins, idx):
         return jnp.all(ins[idx][None] != self[idx])
 
+    # TODO: creating an updated index then doing a gather might be better than
+    #       CaS followed by read dependencies? may have the same problem though
+    #       need to think through the op order and what branch prediction can do
+    #       even XLA native sort might be better because of sorting networks
+    #       regardless, in practice this can be improved for consecutive inserts
+    #       rapids keeps a fully ordered list using insertion sort and memmove
+    #       but XLA can't guarantee contiguous memory blocks move efficiently
+    #       maybe an ordered (doubly) linked list alongside the max heap
+    #       since that one has O(1) insertion time
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
@@ -90,6 +100,7 @@ class Heap(Group):
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
+# TODO: flags as bool for sake of sort efficiency
 @jax.tree_util.register_pytree_node_class
 class NNDHeap(Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
@@ -165,6 +176,24 @@ class NNDHeap(Heap, grouping(
                 self.accumulator, self.distances[:, 0], data, self, 0,
                 dist=dist)
 
+class NNDHeapGPU(NNDHeap):
+    def build(self, limit, rng):
+        counts = jnp.sum(self.flags, axis=1)
+        counts = jnp.asarray((self.shape[2] - counts, counts))
+        _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
+        # TODO: limit < n_neighbors -> non random selection; permute pre sort
+        ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
+        # TODO: OOB -1
+        unset = max(0, limit - self.shape[2])
+        ordered = jnp.pad(ordered, ((0, 0), (0, 0), (0, unset)))
+        # want to enable asyncronous writes but need deterministic order
+        # original repo's implementation interleaves threads' memory access
+        # instead, start by assigning random values to avoid prng order issues
+        # first pass over indices sorted by flag: jax.scan carrying count so far
+        # second pass pallas which can have out of order write b/c cache misses
+        # reservoir sample referenced row, writing iff the prev count is smaller
+        # requires atomic read/write; jax.experimental.pallas.atomic_max
+
 class Candidates:
     def checked(self, apply, thresholds, data, dist):
         def inner(k, idx1, j, idx0, i, out):
@@ -195,6 +224,9 @@ class NNDCandidates(Candidates, grouping(
         f = outer("new", lambda i: 0, lambda *a: h(*a[:-1], g(*a)))
         g = outer("new", lambda i: i + 1, inner)
         h = outer("old", lambda i: 0, inner)
+        # TODO: want vmap, but has an arbitrary number of reverse neighbors
+        # https://github.com/rapidsai/raft/blob/branch-24.10/cpp/include/raft/neighbors/detail/nn_descent.cuh#L517
+        # huh?
         return jax.lax.fori_loop(0, self.shape[1], f, out)
 
 @jax.tree_util.register_pytree_node_class

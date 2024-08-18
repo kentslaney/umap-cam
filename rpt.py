@@ -121,6 +121,9 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
                             rng, splits.at[segment].set(-1), step, planes,
                             order),
                     *args)
+        # TODO: pallas for masked write efficiency
+        #       or at least vmap -> sum
+        # skips over already-determined splits
         rng, splits, step, planes, order = jax.lax.fori_loop(
                 2 ** depth - 1, 2 ** (depth + 1) - 1, inner,
                 (rng, splits, jnp.arange(data.shape[0]), planes, order))

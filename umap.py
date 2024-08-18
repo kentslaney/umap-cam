@@ -264,6 +264,7 @@ class Optimizer(BaseOptimizer):
                 (positive, rng, current, jax.lax.stop_gradient(tail_embedding)))
         return loss, rng
 
+    # TODO: accumulate over epoch
     def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
         alpha = 1 - n / adj.n_epochs
         grad, rng = jax.grad(self.sample, (0, 1), True)(
@@ -274,6 +275,8 @@ class Optimizer(BaseOptimizer):
             tail_embedding += negative * alpha
         return rng, head_embedding, tail_embedding, adj
 
+# TODO: constrained optimization solution just needs the shape to be right
+#       scale bounds to domain and apply gradient to (soft-)boundary points
 if __name__ == "__main__":
     # from sklearn.datasets import load_digits
     # from nnd import aknn, NNDHeap
