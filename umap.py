@@ -276,7 +276,10 @@ class Optimizer(BaseOptimizer):
         return rng, head_embedding, tail_embedding, adj
 
 # TODO: constrained optimization solution just needs the shape to be right
-#       scale bounds to domain and apply gradient to (soft-)boundary points
+#   ... scale bounds to domain and apply gradient to (soft-)boundary points
+#       the best option is probably just adding the rescale factor to the loss
+#       it adds a hyperparameter trading off space efficiency vs accuracy though
+#       penalize soft boundary via beta distribution non-linearity
 if __name__ == "__main__":
     # from sklearn.datasets import load_digits
     # from nnd import aknn, NNDHeap

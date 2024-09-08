@@ -55,14 +55,18 @@ class Heap(Group):
         return jnp.all(ins[idx][None] != self[idx])
 
     # TODO: creating an updated index then doing a gather might be better than
-    #       CaS followed by read dependencies? may have the same problem though
+    #   ... CaS followed by read dependencies? may have the same problem though
     #       need to think through the op order and what branch prediction can do
     #       even XLA native sort might be better because of sorting networks
     #       regardless, in practice this can be improved for consecutive inserts
     #       rapids keeps a fully ordered list using insertion sort and memmove
-    #       but XLA can't guarantee contiguous memory blocks move efficiently
-    #       maybe an ordered (doubly) linked list alongside the max heap
-    #       since that one has O(1) insertion time
+    #   ... but XLA can't guarantee contiguous memory blocks move efficiently
+    #       asymptotically optimal is probably just a sorted tree data structure
+    #       in practice an XLA sort op is probably faster for reasonable sizes
+    #       sort (distance, index) to prevent extra traversal for deduplication
+    #       child pointers via an extra level of indirection alongside the heap
+    #   ... is better for space efficiency and tree balance requirements
+    #       it would be nice to be a strict superset of functionality
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
