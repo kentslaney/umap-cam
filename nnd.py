@@ -1,7 +1,8 @@
 from collections import namedtuple
 from functools import partial
-import jax.numpy as jnp
 import jax
+import jax.numpy as jnp
+import jax.experimental.pallas as pl
 
 import rpt
 from group import Group, grouping, groupaux
@@ -39,6 +40,7 @@ class Heap(Group):
             return heap, i, broken
         return jax.lax.while_loop(cond, inner, (self, i, False))[0]
 
+    # will be replaced by AVL tree
     def ascending(self):
         def outer(i, heap):
             def inner(j, heap):
@@ -62,7 +64,6 @@ class Heap(Group):
     #       rapids keeps a fully ordered list using insertion sort and memmove
     #   ... but XLA can't guarantee contiguous memory blocks move efficiently
     #       asymptotically optimal is probably just a sorted tree data structure
-    #       in practice an XLA sort op is probably faster for reasonable sizes
     #       sort (distance, index) to prevent extra traversal for deduplication
     #       child pointers via an extra level of indirection alongside the heap
     #   ... is better for space efficiency and tree balance requirements
@@ -182,14 +183,6 @@ class NNDHeap(Heap, grouping(
 
 class NNDHeapGPU(NNDHeap):
     def build(self, limit, rng):
-        counts = jnp.sum(self.flags, axis=1)
-        counts = jnp.asarray((self.shape[2] - counts, counts))
-        _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
-        # TODO: limit < n_neighbors -> non random selection; permute pre sort
-        ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
-        # TODO: OOB -1
-        unset = max(0, limit - self.shape[2])
-        ordered = jnp.pad(ordered, ((0, 0), (0, 0), (0, unset)))
         # want to enable asyncronous writes but need deterministic order
         # original repo's implementation interleaves threads' memory access
         # instead, start by assigning random values to avoid prng order issues
@@ -197,6 +190,60 @@ class NNDHeapGPU(NNDHeap):
         # second pass pallas which can have out of order write b/c cache misses
         # reservoir sample referenced row, writing iff the prev count is smaller
         # requires atomic read/write; jax.experimental.pallas.atomic_max
+
+        assert limit > 0, "limit should be strictly positive"
+        assert (limit & (limit - 1)) == 0, "limit should be a power of 2"
+        assert (self.shape[2] & (self.shape[2] - 1)) == 0, \
+                "n_neighbors should be a power of 2" # TODO: relax
+
+        counts = jnp.sum(self.flags, axis=1)
+        counts = jnp.asarray((self.shape[2] - counts, counts))
+        if limit < self.shape[2]:
+            rng, subkey = jax.random.split(rng)
+            order = jnp.tile(jnp.arange(self.shape[2]), (self.shape[1], 1))
+            order = jax.random.permute(subkey, order, 1, True)
+            split = jnp.take(self.flags, order, 1, unique_indices=True)
+            _, order = jax.lax.sort_key_val(split, order)
+            ordered = jnp.take(self.indices, order, 1, unique_indices=True)
+        else:
+            _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
+        ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
+
+        # could be built iteratively and stored
+        def sample_n(counts, node):
+            res = jnp.take(counts, node, unique_indices=True)
+            return counts.at[node].add(1), res
+        n = jax.lax.vmap(lambda nodes, counts: jax.lax.scan(
+                sample_n, counts, nodes))(ordered, counts)
+
+        rng, subkey = jax.random.split(rng)
+        d = jax.random.uniform(subkey, ordered.shape)
+        d = jnp.int32(jnp.maximum(d, n < limit) * n)
+        mask = lambda x: jnp.arange(self.shape[2]) < x
+        mask = jax.vmap(jax.vmap(mask))(counts) & (d < limit)
+
+        ref = jnp.full((2, self.shape[1], limit), -1)
+        @partial(
+                pl.pallas_call,
+                out_shape=jax.ShapeDtypeStruct((), jnp.bool),
+                in_specs=[
+                    pl.BlockSpec((d.shape[2],)),
+                    pl.BlockSpec((mask.shape[2],)),
+                    pl.BlockSpec(()),
+                    pl.BlockSpec(ref.shape[1:]),
+                ],
+                grid=(self.shape[1],))
+        def reservoir(d_ref, mask_ref, count_ref, full_ref, o_ref):
+            pl.atomic_max(
+                    full_ref, d_ref[mask_ref[:]],
+                    jnp.broadcast_to(pl.program_id(0), count_ref[None]))
+        jax.vmap(reservoir)(d, mask, jnp.sum(mask, 2), ref)
+
+        def backfill(count, forward, ref):
+            return jnp.where(
+                    (jnp.arange(self.shape[2]) < count) & (ref < 0),
+                    forward, ref)
+        return jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
 
 class Candidates:
     def checked(self, apply, thresholds, data, dist):
@@ -231,6 +278,8 @@ class NNDCandidates(Candidates, grouping(
         # TODO: want vmap, but has an arbitrary number of reverse neighbors
         # https://github.com/rapidsai/raft/blob/branch-24.10/cpp/include/raft/neighbors/detail/nn_descent.cuh#L517
         # huh?
+        # jax.scan over rows to create a linked list of reverse neighbors
+        # convert each linked list to an AVL tree then merge
         return jax.lax.fori_loop(0, self.shape[1], f, out)
 
 @jax.tree_util.register_pytree_node_class
