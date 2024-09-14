@@ -181,6 +181,7 @@ class NNDHeap(Heap, grouping(
                 self.accumulator, self.distances[:, 0], data, self, 0,
                 dist=dist)
 
+@jax.tree_util.register_pytree_node_class
 class NNDHeapGPU(NNDHeap):
     def build(self, limit, rng):
         # want to enable asyncronous writes but need deterministic order
@@ -208,42 +209,56 @@ class NNDHeapGPU(NNDHeap):
         else:
             _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
         ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
+        mask = lambda x: jnp.arange(self.shape[2]) >= x
+        mask = jax.vmap(jax.vmap(mask))(counts)
+        ordered |= jnp.where(mask, -1, 0)
 
         # could be built iteratively and stored
         def sample_n(counts, node):
-            res = jnp.take(counts, node, unique_indices=True)
-            return counts.at[node].add(1), res
-        n = jax.lax.vmap(lambda nodes, counts: jax.lax.scan(
-                sample_n, counts, nodes))(ordered, counts)
+            valid = jnp.arange(node.size - 1) < node[0]
+            return counts.at[node[1:]].add(valid), counts[node[1:]]
+        nodes = jnp.concatenate((counts[..., None], ordered), -1)
+        _, n = jax.vmap(lambda nodes, counts: jax.lax.scan(
+                sample_n, counts, nodes))(nodes, counts)
 
         rng, subkey = jax.random.split(rng)
         d = jax.random.uniform(subkey, ordered.shape)
         d = jnp.int32(jnp.maximum(d, n < limit) * n)
-        mask = lambda x: jnp.arange(self.shape[2]) < x
-        mask = jax.vmap(jax.vmap(mask))(counts) & (d < limit)
+        mask |= d >= limit
+        valid = jnp.sum(~mask, 2)
+
+        d = jnp.stack((ordered, d))
+        _, d = jax.lax.sort_key_val(jnp.stack((mask, mask)), d, 2)
 
         ref = jnp.full((2, self.shape[1], limit), -1)
         @partial(
                 pl.pallas_call,
-                out_shape=jax.ShapeDtypeStruct((), jnp.bool),
+                out_shape=jax.ShapeDtypeStruct(ref.shape[1:], jnp.int32),
                 in_specs=[
-                    pl.BlockSpec((d.shape[2],)),
-                    pl.BlockSpec((mask.shape[2],)),
-                    pl.BlockSpec(()),
-                    pl.BlockSpec(ref.shape[1:]),
+                    pl.BlockSpec((1, 1), lambda i, j: (i, j)),
+                    pl.BlockSpec((1, 1), lambda i, j: (i, j)),
+                    pl.BlockSpec((1,), lambda i, j: (i,)),
+                    pl.BlockSpec(ref.shape[1:], lambda i, j: (0, 0)),
                 ],
-                grid=(self.shape[1],))
-        def reservoir(d_ref, mask_ref, count_ref, full_ref, o_ref):
+                out_specs=pl.BlockSpec(ref.shape[1:], lambda i, j: (0, 0)),
+                grid=(self.shape[1], d.shape[2]))
+        def reservoir(row_ref, d_ref, count_ref, full_ref, o_ref):
             pl.atomic_max(
-                    full_ref, d_ref[mask_ref[:]],
-                    jnp.broadcast_to(pl.program_id(0), count_ref[None]))
-        jax.vmap(reservoir)(d, mask, jnp.sum(mask, 2), ref)
+                    full_ref, (d_ref[0], row_ref[0]), pl.program_id(0)[None],
+                    mask=(pl.program_id(1) < count_ref[0])[None])
+            o_ref[:] = full_ref[:]
+        ref = jax.vmap(reservoir)(*jnp.unstack(d), valid, ref)
 
         def backfill(count, forward, ref):
             return jnp.where(
                     (jnp.arange(self.shape[2]) < count) & (ref < 0),
                     forward, ref)
-        return jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
+        ref = jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
+        update = self.indices[:, :limit] != ref[1, :, ::-1]
+        unset = ((0, 0), (0, max(0, limit - self.shape[2])))
+        update = jnp.pad(update, unset, constant_values=True)
+        update = self.at["flags"].set(self.flags & update)
+        return update, NNDCandidates(*ref), rng
 
 class Candidates:
     def checked(self, apply, thresholds, data, dist):
