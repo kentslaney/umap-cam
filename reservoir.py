@@ -16,6 +16,8 @@ def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
         heap, _ = heap.update(trees, data)
     return data, heap, rng
 
+data, heap, _ = test_setup(n_trees=0)
+
 def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=None, uniq="reservoir"):
     import pathlib
     path = pathlib.Path.cwd() if path is None else pathlib.Path(path)
@@ -35,10 +37,10 @@ def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=No
     return data, heap
 
 def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
-    data, heap = test_cached(data, k, rng, max_candidates, n_trees)
+    data, heap = test_setup(data, k, rng, max_candidates, n_trees)
     rng = jax.random.key(0)
     rng, subkey = jax.random.split(rng)
     heap = heap.at['flags'].set(jax.random.bernoulli(subkey, shape=(512, 16)))
     return (heap, data) + heap.build(max_candidates, rng)
 
-heap, data, update, step, rng = test()
+#heap, data, update, step, rng = test()

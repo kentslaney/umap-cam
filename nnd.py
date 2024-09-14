@@ -260,6 +260,19 @@ class NNDHeapGPU(NNDHeap):
         update = self.at["flags"].set(self.flags & update)
         return update, NNDCandidates(*ref), rng
 
+    def randomize(self, data, rng, dist=euclidean):
+        def outer(rng, i, _, existing, flags):
+            idx = jax.random.choice(
+                    rng, self.shape[1] - 1, (self.shape[2],), False)
+            idx = jnp.where(existing == -1, idx + (idx >= i), existing)
+            d = jax.vmap(dist, (0, None))(data[idx], data[i])
+            _, flags = jax.lax.sort_key_val(d, jnp.uint8(existing == -1))
+            d, idx = jax.lax.sort_key_val(d, idx)
+            return d[::-1], idx[::-1], flags
+        rng = jax.random.split(rng, self.shape[1] + 1)
+        res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
+        return self.tree_unflatten((), res), rng[0]
+
 class Candidates:
     def checked(self, apply, thresholds, data, dist):
         def inner(k, idx1, j, idx0, i, out):
