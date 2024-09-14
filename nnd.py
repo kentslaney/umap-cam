@@ -105,11 +105,10 @@ class Heap(Group):
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
-# TODO: flags as bool for sake of sort efficiency
 @jax.tree_util.register_pytree_node_class
 class NNDHeap(Heap, grouping(
         "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
-        (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
+        (jnp.float32(jnp.inf), jnp.int32(-1), jnp.bool(False)))):
     @partial(jax.jit, static_argnames=('limit',))
     def build(self, limit, rng):
         def init(i, args):
@@ -136,7 +135,7 @@ class NNDHeap(Heap, grouping(
             def loop(j, cur):
                 mask = cur.indices[i] == heap.new.indices[i, j]
                 # reset flag
-                return cur.at["flags"].set(jnp.where(mask, 0, cur.flags[i]))
+                return cur.at["flags"].set(jnp.where(mask, False, cur.flags[i]))
             return jax.lax.fori_loop(0, limit, loop, cur)
         cur = jax.lax.fori_loop(0, self.shape[1], end, self)
         return cur, NNDCandidates(*heap[:, "indices"]), rng
@@ -149,7 +148,7 @@ class NNDHeap(Heap, grouping(
             idx = jax.random.randint(subkey, (), 0, self.shape[1] - 1)
             idx += idx >= i
             heap = heap.at[:, i].pusher(
-                    dist(data[idx], data[i]), idx, jnp.uint8(1),
+                    dist(data[idx], data[i]), idx, jnp.bool(True),
                     checked=("indices",))
             return i, heap, rng
         def init(i, args):
@@ -249,7 +248,7 @@ class NNDHeapGPU(NNDHeap):
                     rng, self.shape[1] - 1, (self.shape[2],), False)
             idx = jnp.where(existing == -1, idx + (idx >= i), existing)
             d = jax.vmap(dist, (0, None))(data[idx], data[i])
-            _, flags = jax.lax.sort_key_val(d, jnp.uint8(existing == -1))
+            _, flags = jax.lax.sort_key_val(d, existing == -1)
             d, idx = jax.lax.sort_key_val(d, idx)
             return d[::-1], idx[::-1], flags
         rng = jax.random.split(rng, self.shape[1] + 1)
