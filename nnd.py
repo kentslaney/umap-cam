@@ -288,9 +288,23 @@ class NNDCandidates(Candidates, grouping(
         # TODO: want vmap, but has an arbitrary number of reverse neighbors
         # https://github.com/rapidsai/raft/blob/branch-24.10/cpp/include/raft/neighbors/detail/nn_descent.cuh#L517
         # huh?
-        # jax.scan over rows to create a linked list of reverse neighbors
         # convert each linked list to an AVL tree then merge
         return jax.lax.fori_loop(0, self.shape[1], f, out)
+
+    # could be built iteratively and stored
+    # jax.scan over rows to create a linked list of reverse neighbors
+    def links(self):
+        def linker(head, args):
+            node, i = args
+            oob = jnp.where(node == -1, self.spec.points, node)
+            res = jnp.where((node == -1)[:, None], -1, head[node])
+            col = jnp.arange(self.spec.size)
+            coords = jnp.stack((jnp.broadcast_to(i, self.spec.size), col), -1)
+            return head.at[oob].set(coords, mode="drop"), res
+        init = jnp.full((self.spec.points + 1, 2), -1)
+        f = lambda x: jax.lax.scan(
+                linker, init, (x, jnp.arange(self.spec.points)))
+        return jax.vmap(f)(jnp.stack(self))
 
 @jax.tree_util.register_pytree_node_class
 class RPCandidates(groupaux("total"), Candidates, grouping(
