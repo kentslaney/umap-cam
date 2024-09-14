@@ -258,6 +258,7 @@ class NNDHeapGPU(NNDHeap):
         unset = ((0, 0), (0, max(0, limit - self.shape[2])))
         update = jnp.pad(update, unset, constant_values=True)
         update = self.at["flags"].set(self.flags & update)
+        # TODO: reservoir sampling should fill left to right
         return update, NNDCandidates(*ref), rng
 
     def randomize(self, data, rng, dist=euclidean):
