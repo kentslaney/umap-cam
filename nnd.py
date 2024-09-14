@@ -209,45 +209,28 @@ class NNDHeapGPU(NNDHeap):
         else:
             _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
         ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
-        mask = lambda x: jnp.arange(self.shape[2]) >= x
-        mask = jax.vmap(jax.vmap(mask))(counts)
-        ordered |= jnp.where(mask, -1, 0)
 
         # could be built iteratively and stored
         def sample_n(counts, node):
-            valid = jnp.arange(node.size - 1) < node[0]
-            return counts.at[node[1:]].add(valid), counts[node[1:]]
+            bound, node = node[0], node[1:]
+            valid = jnp.arange(node.size) < bound
+            return counts.at[node].add(valid), counts[node]
         nodes = jnp.concatenate((counts[..., None], ordered), -1)
-        _, n = jax.vmap(lambda nodes, counts: jax.lax.scan(
-                sample_n, counts, nodes))(nodes, counts)
+        _, n = jax.vmap(lambda counts, nodes: jax.lax.scan(
+                sample_n, counts, nodes))(counts, nodes)
 
         rng, subkey = jax.random.split(rng)
         d = jax.random.uniform(subkey, ordered.shape)
         d = jnp.int32(jnp.maximum(d, n < limit) * n)
-        mask |= d >= limit
-        valid = jnp.sum(~mask, 2)
 
-        d = jnp.stack((ordered, d))
-        _, d = jax.lax.sort_key_val(jnp.stack((mask, mask)), d, 2)
+        mask = jnp.arange(limit)[None] < counts[:, :, None]
+        oob = jnp.stack((self.shape[1], limit))[None, :, None, None]
+        d = jnp.where(mask[:, None], jnp.stack((ordered, d), 1), oob)
 
-        ref = jnp.full((2, self.shape[1], limit), -1)
-        @partial(
-                pl.pallas_call,
-                out_shape=jax.ShapeDtypeStruct(ref.shape[1:], jnp.int32),
-                in_specs=[
-                    pl.BlockSpec((1, 1), lambda i, j: (i, j)),
-                    pl.BlockSpec((1, 1), lambda i, j: (i, j)),
-                    pl.BlockSpec((1,), lambda i, j: (i,)),
-                    pl.BlockSpec(ref.shape[1:], lambda i, j: (0, 0)),
-                ],
-                out_specs=pl.BlockSpec(ref.shape[1:], lambda i, j: (0, 0)),
-                grid=(self.shape[1], d.shape[2]))
-        def reservoir(row_ref, d_ref, count_ref, full_ref, o_ref):
-            pl.atomic_max(
-                    full_ref, (d_ref[0], row_ref[0]), pl.program_id(0)[None],
-                    mask=(pl.program_id(1) < count_ref[0])[None])
-            o_ref[:] = full_ref[:]
-        ref = jax.vmap(reservoir)(*jnp.unstack(d), valid, ref)
+        def reservoir(idx, ref):
+            via = jnp.tile(jnp.arange(idx.shape[1])[:, None], (1, idx.shape[2]))
+            return ref.at[*idx.reshape(2, -1)].max(via.flatten(), mode="drop")
+        ref = jax.vmap(reservoir)(d, jnp.full((2, self.shape[1], limit), -1))
 
         def backfill(count, forward, ref):
             return jnp.where(
@@ -258,7 +241,6 @@ class NNDHeapGPU(NNDHeap):
         unset = ((0, 0), (0, max(0, limit - self.shape[2])))
         update = jnp.pad(update, unset, constant_values=True)
         update = self.at["flags"].set(self.flags & update)
-        # TODO: reservoir sampling should fill left to right
         return update, NNDCandidates(*ref), rng
 
     def randomize(self, data, rng, dist=euclidean):
