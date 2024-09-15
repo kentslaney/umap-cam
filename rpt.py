@@ -120,8 +120,6 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
 
     for depth in range(loops):
         largest_possible = math.ceil(data.shape[0] * bound ** depth)
-        # TODO: pallas for masked write efficiency
-        #       or at least vmap -> sum
         # skips over already-determined splits
         start, end = (2 ** depth - 1, 2 ** (depth + 1) - 1)
         layer = jnp.arange(start, end)
