@@ -3,9 +3,9 @@ import jax.numpy as jnp
 import sys, pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[0]))
-import nnd
+import nnd, rpt
 from importlib import reload
-nnd = reload(nnd)
+nnd, rpt = reload(nnd), reload(rpt)
 
 from nnd import NNDHeap, NNDHeapGPU, RPCandidates
 
@@ -21,7 +21,7 @@ def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
         heap, _ = heap.update(trees, data)
     return data, heap, rng
 
-# data, heap, _ = test_setup(n_trees=0)
+data, heap, _ = test_setup()
 
 def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=None, uniq="reservoir"):
     import pathlib
@@ -48,5 +48,5 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     heap = heap.at['flags'].set(jax.random.bernoulli(subkey, shape=(512, 16)))
     return (heap, data) + heap.build(max_candidates, rng)
 
-heap, data, update, step, rng = test()
-tail, head = step.links()
+# heap, data, update, step, rng = test()
+# tail, head = step.links()

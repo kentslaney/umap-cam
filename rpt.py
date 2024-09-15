@@ -63,71 +63,74 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
     splits = jnp.zeros((2 ** loops - 1,), dtype=jnp.int32)
     planes = jnp.zeros((2 ** loops - 1, data.shape[1] + 1))
     order = jnp.arange(data.shape[0])
+
+    @partial(jax.vmap, in_axes=(None, None, 0, 0))
+    @partial(jax.jit, static_argnames=('largest_possible',))
+    def inner(largest_possible, splits, rng, segment):
+        left, right = binaryBounds(segment, splits, data.shape[0])
+        size = right - left
+        def partition(rng, step, planes):
+            start = jnp.minimum(data.shape[0] - largest_possible, left)
+            idx = start + jnp.arange(largest_possible)
+            window = (idx >= left) & (idx < right)
+            sliced = jax.lax.dynamic_slice_in_dim(
+                    order, start, largest_possible)
+
+            def cond(args):
+                count = args[0]
+                return (count < (1 - bound) * size) | (count > bound * size)
+            def degenerate(count, mask, rng, normal, boundary):
+                rng, subkey = jax.random.split(rng)
+                mask = jax.random.bernoulli(subkey, shape=(
+                    largest_possible,))
+                return (
+                        jnp.sum(mask & window), mask, rng,
+                        jnp.asarray((jnp.inf,) * data.shape[1]),
+                        jnp.asarray(jnp.inf))
+            def loop(args):
+                prev, mask, rng, normal, boundary = args
+                rng, first, second = sample(rng, left, right)
+                # for arbitrary distance functions, check which is closer
+                normal, boundary = hyperplane(
+                        data[order[first]], data[order[second]])
+                mask = jnp.sum(data[sliced] * normal[None], 1) > boundary
+                count = jnp.sum(mask & window)
+                return jax.lax.cond(
+                        (count == 0) | (count == size) | (
+                                count == prev) | (size - count == prev),
+                        degenerate, lambda *a: a,
+                        count, mask, rng, normal, boundary)
+
+            empty = (jnp.zeros((data.shape[1],)), jnp.zeros(()))
+            count, mask, rng, normal, boundary = jax.lax.while_loop(
+                    cond, loop, (0, window, rng, *empty))
+
+            sort = (mask & (idx >= left)) | (idx >= right)
+            _splits = left + count
+            planes = planes.at[0].set(boundary).at[1:].set(normal)
+            delta = jnp.where(
+                    sort, jnp.cumsum(~sort[::-1])[::-1], -jnp.cumsum(sort))
+            step = jax.lax.dynamic_update_slice_in_dim(step, delta, start, 0)
+            return step, _splits, planes
+        return jax.lax.cond(
+                size > goal_leaf_size, partition,
+                lambda rng, step, planes: (step , -1, planes), rng,
+                jnp.zeros(data.shape[0], jnp.int32),
+                jnp.zeros(data.shape[1] + 1))
+
     for depth in range(loops):
         largest_possible = math.ceil(data.shape[0] * bound ** depth)
-        def inner(segment, args):
-            rng, splits, step, planes, order = args
-            left, right = binaryBounds(segment, splits, data.shape[0])
-            size = right - left
-            def partition(rng, splits, step, planes, order):
-                start = jnp.minimum(data.shape[0] - largest_possible, left)
-                idx = start + jnp.arange(largest_possible)
-                window = (idx >= left) & (idx < right)
-                sliced = jax.lax.dynamic_slice_in_dim(
-                        order, start, largest_possible)
-                empty = (jnp.zeros((data.shape[1],)), jnp.zeros(()))
-
-                def cond(args):
-                    count = args[0]
-                    return (count < (1 - bound) * size) | (count > bound * size)
-                def degenerate(count, mask, rng, normal, boundary):
-                    rng, subkey = jax.random.split(rng)
-                    mask = jax.random.bernoulli(subkey, shape=(
-                        largest_possible,))
-                    return (
-                            jnp.sum(mask & window), mask, rng,
-                            jnp.asarray((jnp.inf,) * data.shape[1]),
-                            jnp.asarray(jnp.inf))
-                def loop(args):
-                    prev, mask, rng, normal, boundary = args
-                    rng, first, second = sample(rng, left, right)
-                    # for arbitrary distance functions, check which is closer
-                    normal, boundary = hyperplane(
-                            data[order[first]], data[order[second]])
-                    mask = jnp.sum(data[sliced] * normal[None], 1) > boundary
-                    count = jnp.sum(mask & window)
-                    return jax.lax.cond(
-                            (count == 0) | (count == size) | (
-                                    count == prev) | (size - count == prev),
-                            degenerate, lambda *a: a,
-                            count, mask, rng, normal, boundary)
-                count, mask, rng, normal, boundary = jax.lax.while_loop(
-                        cond, loop, (0, window, rng, *empty))
-
-                sort = (mask & (idx >= left)) | (idx >= right)
-                splits = splits.at[segment].set(left + count)
-                planes = planes.at[segment, 0].set(boundary)
-                planes = planes.at[segment, 1:].set(normal)
-                delta = jnp.where(
-                        sort, jnp.cumsum(~sort[::-1])[::-1], -jnp.cumsum(sort))
-                section = jax.lax.dynamic_slice_in_dim(
-                        step, start, largest_possible)
-                step = jax.lax.dynamic_update_slice_in_dim(
-                        step, section + delta, start, 0)
-                return rng, splits, step, planes, order
-            return jax.lax.cond(
-                    size > goal_leaf_size, partition,
-                    lambda rng, splits, step, planes, order: (
-                            rng, splits.at[segment].set(-1), step, planes,
-                            order),
-                    *args)
         # TODO: pallas for masked write efficiency
         #       or at least vmap -> sum
         # skips over already-determined splits
-        rng, splits, step, planes, order = jax.lax.fori_loop(
-                2 ** depth - 1, 2 ** (depth + 1) - 1, inner,
-                (rng, splits, jnp.arange(data.shape[0]), planes, order))
-        order = order[step]
+        start, end = (2 ** depth - 1, 2 ** (depth + 1) - 1)
+        layer = jnp.arange(start, end)
+        rng = jax.random.split(rng, layer.size + 1)
+        rng, subkeys = rng[0], rng[1:]
+        step, _splits, _planes = inner(largest_possible, splits, subkeys, layer)
+        splits = splits.at[start:end].set(_splits)
+        planes = planes.at[start:end].set(_planes)
+        order = order[jnp.sum(step, 0) + jnp.arange(data.shape[0])]
 
     def warner(randomized, total):
         at = jnp.concatenate(jnp.where(randomized))

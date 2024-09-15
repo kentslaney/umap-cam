@@ -71,6 +71,7 @@ class Heap(Group):
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
+        assert all(i.dtype == j.dtype for i, j in zip(value, self))
         value = tuple(
                 jnp.asarray(i) if isinstance(i, (int, float))
                 else i for i in value)
@@ -164,7 +165,7 @@ class NNDHeap(Heap, grouping(
         for i, j in ((p, q), (q, p)):
             # set flag
             added, updated = heap.indirect[:, i].push(
-                    d, j, 1, checked=("indices",))
+                    d, j, jnp.bool(True), checked=("indices",))
             heap = heap.at[:, i].set(updated)
             total += added
         return heap, total
