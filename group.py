@@ -189,6 +189,7 @@ def grouping(clsname, dims=None, names=None, defaults=None):
                         dims if isinstance(dims, int) else len(dims))
                 assert all(i.shape == against for i in checking)
                 return super().__new__(cls, *a, **kw)
+            # if erroring double check cls is registered as a pytree node class
             return super().__new__(cls, *(
                     jnp.full(GroupSpec(*a, **kw), i) for i in defaults))
 
