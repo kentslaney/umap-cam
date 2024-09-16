@@ -3,8 +3,9 @@ import jax.numpy as jnp
 import sys, pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[0]))
-import avl
+import avl, group
 from importlib import reload
+group = reload(group)
 avl = reload(avl)
 
 from avl import AVLs

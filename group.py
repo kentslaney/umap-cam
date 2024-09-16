@@ -10,9 +10,11 @@ class GroupSetter:
         sel = range(len(self.group))[self.idx[0]]
         sel, value = ((sel,), (value,)) if isinstance(sel, int) else (
                 sel, value * len(sel) if len(value) == 1 else value)
-        return self.group.tree_unflatten(self.group.aux_data, tuple(
-            self.group[i].at[self.idx[1:]].set(value[sel.index(i)]) if i in sel
-            else self.group[i] for i in range(len(self.group))))
+        return self.group.tree_unflatten(
+                self.group.aux_data, tuple(
+                    self.group[i].at[self.idx[1:]].set(value[sel.index(i)])
+                    if i in sel else self.group[i]
+                    for i in range(len(self.group))) + self.group.out)
 
     def __getattr__(self, key):
         f = getattr(self.group.indirect[self.idx], key)
@@ -80,6 +82,10 @@ class Group:
             pass
         return type(keying.__name__, (meta, keying), {})
 
+    @property
+    def out(self):
+        return self.tree_flatten()[0][len(self):]
+
     @classmethod
     def tree_unflatten(cls, aux_data, children):
         assert aux_data == ()
@@ -103,7 +109,7 @@ class Group:
             if len(idx) == 1:
                 return self
             return self.tree_unflatten(
-                    self.aux_data, tuple(i[idx[1:]] for i in self))
+                    self.aux_data, tuple(i[idx[1:]] for i in self) + self.out)
         dims = [i for i in self.spec._names if i not in dims]
         dims = dims if isinstance(self.spec, Named) else len(dims)
         names = self._names[idx[0]]
@@ -111,7 +117,7 @@ class Group:
         res = grouping(clsname, dims, names)
         return self.aux_keyed(res).tree_unflatten(self.aux_data, tuple(
                 i[idx[1:]] if len(idx) > 1 else i
-                for i in super().__getitem__(idx[0])))
+                for i in super().__getitem__(idx[0])) + self.out)
 
     @property
     def at(self):
@@ -255,5 +261,12 @@ def outgroup(*required, **optional):
         @classmethod
         def tree_unflatten(self, aux_data, children):
             return super().tree_unflatten(*swap(aux_data, children))
+
+        def aux_keyed(self, keying):
+            keying = super().aux_keyed(keying)
+            meta = outgroup(*required, **optional)
+            class res(meta, keying):
+                pass
+            return type(keying.__name__, (meta, keying), {})
     return OutGroup
 
