@@ -14,3 +14,5 @@ t = AVLs(16)
 keys = jnp.concatenate(
         (jnp.arange(1, 6) * 10, jnp.asarray((25,))), dtype=jnp.float32)
 t = t.at['key', :6].set(keys)
+for i in range(6):
+    t = t.insert(i)

@@ -255,12 +255,19 @@ def outgroup(*required, **optional):
     count = len(required) + len(optional)
     swap = lambda a, b: (a + b[len(b) - count:], b[:len(b) - count])
     class OutGroup(groupaux(*required, **optional)):
+        def __new__(cls, *a, **kw):
+            return super().__new__(cls, *a, **kw).deaux()
+
         def tree_flatten(self):
             return swap(*super().tree_flatten())
 
         @classmethod
         def tree_unflatten(self, aux_data, children):
-            return super().tree_unflatten(*swap(aux_data, children))
+            return super().tree_unflatten(*swap(aux_data, children)).deaux()
+
+        def deaux(self):
+            self.aux_keys = self.aux_keys[:len(self.aux_dict) - count]
+            return self
 
         def aux_keyed(self, keying):
             keying = super().aux_keyed(keying)

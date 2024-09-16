@@ -1,6 +1,7 @@
-import jax
+import jax, math
 import jax.numpy as jnp
 from group import Group, grouping, outgroup
+from functools import partial
 
 class LazyGetter:
     def __init__(self, f):
@@ -55,10 +56,10 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
 
     @property
     def bound(self):
-        phi = (1 + jnp.sqrt(5)) / 2
-        log_phi = jnp.log(phi)
-        b = jnp.log(5) / log_phi / 2 - 2
-        return jnp.int32(jnp.log(self.spec.size + 2) / log_phi + b)
+        phi = (1 + math.sqrt(5)) / 2
+        log_phi = math.log(phi)
+        b = math.log(5) / log_phi / 2 - 2
+        return math.trunc(math.log(self.spec.size + 2) / log_phi + b)
 
     @jax.jit
     def insert(self, x):
@@ -74,9 +75,9 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
             sign = t.cmp(ins, root)
             return jax.lax.cond(
                     sign == 0,
-                    lambda t, root, ins, sign, depth: (t, root),
-                    valid,
-                    t, ins, root, sign, depth - 1)
+                    lambda t, root, ins, sign: (t, root),
+                    lambda *a: valid(*a, depth - 1),
+                    t, ins, root, sign)
         @partial(jax.jit, static_argnames=("depth",))
         def valid(t, ins, root, sign, depth):
             t = jax.lax.cond(
@@ -87,23 +88,24 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
                         *_insert(t, ins, t.left[root], depth), root),
                     t, ins, root)
 
-
             t = t.at['height', root].set(1 + jnp.maximum(
                     t.height[t.left[root]], t.height[t.right[root]]))
             balance = t.balance[root]
             balance = jnp.where(balance > 1, 1, jnp.where(balance < -1, -1, 0))
+            side = jnp.where(balance == 0, 1, t.cmp(
+                ins, jnp.where(balance == 1, t.left[root], t.right[root])))
 
             t = jax.lax.cond(
-                    balance == sign,
-                    lambda t, root, sign: jax.lax.cond(
-                        sign == 1,
+                    balance == side,
+                    lambda t, root, side: jax.lax.cond(
+                        side == 1,
                         lambda t, root: left(
                             *t.left_rotate(t.left[root]), root),
                         lambda t, root: right(
                             *t.right_rotate(t.right[root]), root),
                         t, root),
-                    lambda t, root, sign: t,
-                    t, root, sign)
+                    lambda t, root, side: t,
+                    t, root, side)
 
             return jax.lax.cond(
                     balance == 0,
@@ -119,13 +121,17 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
         def _insert(t, ins, root, depth):
             if depth == 0:
                 return t, root
-            return jax.lax.cond(root == -1, base, recurse, t, ins, root)
+            return jax.lax.cond(
+                    root == -1,
+                    lambda *a: base(*a, depth),
+                    lambda *a: recurse(*a, depth),
+                    t, ins, root)
         def init(t, ins):
             t, root = _insert(t, ins, t.root, t.bound)
-            t = t.at['root'].set(root)
+            t.root = root
             return t
 
         first = self.root == -1
-        self = jnp.where(first, self.at['root'].set(x), self)
+        self.root = jnp.where(first, x, self.root)
         return jax.lax.cond(first, lambda t, x: t, init, self, x)
 
