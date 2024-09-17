@@ -10,11 +10,21 @@ avl = reload(avl)
 
 from avl import AVLs
 
+# s = AVLs(16)
+# keys = jnp.concatenate(
+#         (jnp.arange(1, 6) * 10, jnp.asarray((25,))), dtype=jnp.float32)
+# s = s.at['key', :keys.size].set(keys)
+# for i in range(keys.size):
+#     s = s.insert(i)
+# print(s)
+
 t = AVLs(16)
-keys = jnp.concatenate(
-        (jnp.arange(1, 6) * 10, jnp.asarray((25,))), dtype=jnp.float32)
-t = t.at['key', :6].set(keys)
-for i in range(6):
+keys = jnp.asarray([9, 5, 10, 0, 6, 11, -1, 1, 2])
+t = t.at['key', :keys.size].set(keys)
+for i in range(keys.size):
     t = t.insert(i)
-print(t)
+
+print(t.walk(transform=int))
+t = t.remove(2)
+print(t.walk(transform=int))
 
