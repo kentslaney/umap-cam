@@ -16,3 +16,5 @@ keys = jnp.concatenate(
 t = t.at['key', :6].set(keys)
 for i in range(6):
     t = t.insert(i)
+print(t)
+

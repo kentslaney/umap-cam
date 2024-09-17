@@ -1,6 +1,6 @@
 import jax, math
 import jax.numpy as jnp
-from group import Group, grouping, outgroup
+from group import grouping, outgroup
 from functools import partial
 
 class LazyGetter:
@@ -9,6 +9,12 @@ class LazyGetter:
 
     def __getitem__(self, i):
         return self.f(i)
+
+@jax.tree_util.register_pytree_node_class
+class SearchPath(outgroup(height=0), grouping(
+        "SearchPath", ("size",), ("path", "sign"),
+        (jnp.int32(-1), jnp.int32(0)))):
+    pass
 
 @jax.tree_util.register_pytree_node_class
 class AVLs(outgroup(root=jnp.int32(-1)), grouping(
@@ -62,38 +68,39 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
         return math.trunc(math.log(self.spec.size + 2) / log_phi + b)
 
     @jax.jit
+    def path(self, x):
+        node = self.root
+        out = SearchPath(self.bound)
+        def body(args):
+            node, x, out = args
+            sign = self.cmp(x, node)
+            out = out.at[:, out.height].set((node, sign))
+            out.height += 1
+            node = jnp.where(sign == 0, -1, jnp.where(
+                    sign == 1, self.right[node], self.left[node]))
+            return node, x, out
+        node, _, out = jax.lax.while_loop(
+                lambda a: a[0] != -1, body, (node, x, out))
+        _, order = jax.lax.sort_key_val(out.path != -1, jnp.arange(self.bound))
+        return out[:, order[::-1]]
+
+    @jax.jit
     def insert(self, x):
         def left(t, ins, root):
             return t.at['left', root].set(ins)
         def right(t, ins, root):
             return t.at['right', root].set(ins)
-
-        def base(t, ins, root, depth):
-            return t.at['height', ins].set(1), ins
-        @partial(jax.jit, static_argnames=("depth",))
-        def recurse(t, ins, root, depth):
-            sign = t.cmp(ins, root)
-            return jax.lax.cond(
-                    sign == 0,
-                    lambda t, root, ins, sign: (t, root),
-                    lambda *a: valid(*a, depth - 1),
-                    t, ins, root, sign)
-        @partial(jax.jit, static_argnames=("depth",))
-        def valid(t, ins, root, sign, depth):
-            t = jax.lax.cond(
-                    sign == 1,
-                    lambda t, ins, root: right(
-                        *_insert(t, ins, t.right[root], depth), root),
-                    lambda t, ins, root: left(
-                        *_insert(t, ins, t.left[root], depth), root),
-                    t, ins, root)
-
+        def body(i, args):
+            path, x, t, y = args
+            root, sign = path[:, i]
+            t = jax.lax.cond(sign == 1, right, left, t, y, root)
             t = t.at['height', root].set(1 + jnp.maximum(
                     t.height[t.left[root]], t.height[t.right[root]]))
+
             balance = t.balance[root]
             balance = jnp.where(balance > 1, 1, jnp.where(balance < -1, -1, 0))
             side = jnp.where(balance == 0, 1, t.cmp(
-                ins, jnp.where(balance == 1, t.left[root], t.right[root])))
+                x, jnp.where(balance == 1, t.left[root], t.right[root])))
 
             t = jax.lax.cond(
                     balance == side,
@@ -107,7 +114,7 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
                     lambda t, root, side: t,
                     t, root, side)
 
-            return jax.lax.cond(
+            return (path, y) + jax.lax.cond(
                     balance == 0,
                     lambda t, root, balance: (t, root),
                     lambda t, root, balance: jax.lax.cond(
@@ -117,21 +124,9 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
                         t, root),
                     t, root, balance)
 
-        @partial(jax.jit, static_argnames=("depth",))
-        def _insert(t, ins, root, depth):
-            if depth == 0:
-                return t, root
-            return jax.lax.cond(
-                    root == -1,
-                    lambda *a: base(*a, depth),
-                    lambda *a: recurse(*a, depth),
-                    t, ins, root)
-        def init(t, ins):
-            t, root = _insert(t, ins, t.root, t.bound)
-            t.root = root
-            return t
-
-        first = self.root == -1
-        self.root = jnp.where(first, x, self.root)
-        return jax.lax.cond(first, lambda t, x: t, init, self, x)
+        path = self.path(x)
+        t = self.at['height', x].set(1)
+        _, _, t, x = jax.lax.fori_loop(0, path.height, body, (path, x, t, x))
+        t.root = x
+        return t
 

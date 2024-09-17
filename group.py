@@ -1,4 +1,5 @@
 from collections import namedtuple
+import jax
 import jax.numpy as jnp
 
 class GroupSetter:
@@ -78,8 +79,6 @@ class Group:
 
     def aux_keyed(self, keying):
         meta = groupaux(**self.aux_dict)
-        class res(meta, keying):
-            pass
         return type(keying.__name__, (meta, keying), {})
 
     @property
@@ -104,7 +103,8 @@ class Group:
         clsname = self.__class__.__name__ + "Slice"
         dims = [
                 i for i, j in zip(self.spec._names, idx[1:])
-                if not isinstance(j, slice)]
+                if not isinstance(j, slice) and (
+                    not isinstance(j, jax.Array) or j.ndim == 0)]
         if len(dims) == 0 and range(len(self))[idx[0]] == range(len(self)):
             if len(idx) == 1:
                 return self
@@ -266,14 +266,14 @@ def outgroup(*required, **optional):
             return super().tree_unflatten(*swap(aux_data, children)).deaux()
 
         def deaux(self):
-            self.aux_keys = self.aux_keys[:len(self.aux_dict) - count]
+            n = len(self.aux_dict) - count
+            self._order = self.aux_keys[n:]
+            self.aux_keys = self.aux_keys[:n]
             return self
 
         def aux_keyed(self, keying):
             keying = super().aux_keyed(keying)
-            meta = outgroup(*required, **optional)
-            class res(meta, keying):
-                pass
+            meta = outgroup(**{i: getattr(self, i) for i in self._order})
             return type(keying.__name__, (meta, keying), {})
     return OutGroup
 
