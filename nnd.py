@@ -217,7 +217,7 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
         "RPCandidates", ("points", "size"))):
     @partial(jax.jit, static_argnames=('apply', 'dist'))
     def updates(self, apply, thresholds, data, *out, dist=euclidean):
-        outer, inner = self.checked(apply, thresholds, data, dist)
+        inner = self.checked(apply, thresholds, data, dist)
         f = self.outer(0, lambda i: 0, lambda *a: g(*a))
         g = self.outer(0, lambda i: i + 1, inner)
         return jax.lax.fori_loop(0, self.total, f, out)

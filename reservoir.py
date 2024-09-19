@@ -42,7 +42,9 @@ def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=No
     if not full.is_file():
         data, heap, _ = test_setup(*params)
         jnp.savez(full, data, heap, params)
-    heap = NNDHeapGPU.tree_unflatten((), heap)
+    form = NNDHeapGPU(*heap.shape[1:])
+    heap = NNDHeapGPU.tree_unflatten(
+            (), tuple(heap) + form.tree_flatten()[0][len(heap):])
     return data, heap
 
 def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):

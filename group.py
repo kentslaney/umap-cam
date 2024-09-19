@@ -112,7 +112,7 @@ class Group:
                 if isinstance(idx[0], tuple) else fields[idx[0]]
         return idx, sel, tuple(fields)
 
-    def apply(self, idx, value=None):
+    def outslice(self, idx, value=None):
         return self.out
 
     def __getitem__(self, idx):
@@ -135,7 +135,7 @@ class Group:
                 return self
             return self.tree_unflatten(
                     self.aux_data, tuple(i[idx[1:]] for i in self) +
-                    self.apply(idx))
+                    self.outslice(idx))
         # dim names if available
         if new_axes:
             dims = len(dims) + new_axes
@@ -148,7 +148,7 @@ class Group:
         res = grouping(clsname, dims, names)
         return self.aux_keyed(res).tree_unflatten(self.aux_data, tuple(
                 self[i][idx[1:]] if len(idx) > 1 else self[i]
-                for i in sel) + self.apply(idx))
+                for i in sel) + self.outslice(idx))
 
     @property
     def at(self):
@@ -167,7 +167,7 @@ class Group:
                 self.aux_data, tuple(
                     self[i].at[idx[1:]].set(value[sel.index(i)])
                     if i in sel else self[i]
-                    for i in range(len(self))) + self.apply(idx, value))
+                    for i in range(len(self))) + self.outslice(idx, value))
 
     @property
     def shape(self):
@@ -190,11 +190,48 @@ class Group:
         return cls.tree_unflatten(xa, tuple(
                 jnp.where(cond, i, j) for i, j in zip(xc, yc)))
 
+# TODO: order shouldn't matter (ideally) or it should at least error
+#       while I'm there, reduce boilerplate
 def group_alias(**kw):
-    class Aliased:
+    class GroupAliased:
+        def aux_keyed(self, keying):
+            keying = super().aux_keyed(keying)
+            meta = group_alias(**kw)
+            return type(keying.__name__, (meta, keying), {})
+
         def ref(self, key):
             return super().ref(
                     kw.get(key, key) if isinstance(key, str) else key)
+
+        def __getattr__(self, key):
+            if key in kw:
+                return getattr(self, kw[key])
+            return super.__getattr__(key)
+
+    return GroupAliased
+
+def dim_alias(**kw):
+    class Alias:
+        def __init__(self, ln, **kw):
+            self.ln, self.kw = ln, kw
+
+        def __getattr__(self, key):
+            return getattr(self.ln, self.kw.get(key, key))
+
+        def index(self, key):
+            return self.ln.index(self.kw.get(key, key))
+
+    class DimAliased:
+        def aux_keyed(self, keying):
+            keying = super().aux_keyed(keying)
+            meta = dim_alias(**kw)
+            return type(keying.__name__, (meta, keying), {})
+
+        @property
+        def spec(self):
+            return Alias(super().spec, **kw)
+
+    return DimAliased
 
 class Named:
     def __repr__(self):
@@ -218,6 +255,10 @@ class Named:
     def _names(self):
         return self._fields
 
+    @property
+    def index(self):
+        return self._names.index
+
 def nameable(clsname, names=None):
     if names is None or isinstance(names, int):
         class GroupSize(tuple):
@@ -228,6 +269,10 @@ def nameable(clsname, names=None):
             @property
             def _names(self):
                 return range(len(self))
+
+            @property
+            def index(self):
+                return self._names.index
     else:
         class GroupSize(Named, namedtuple(clsname, names)):
             pass
@@ -344,18 +389,18 @@ def marginalized(*axes, **defaults):
 
         @property
         def axes(self):
-            return [i for i in axes if i in self.spec._names]
+            return [i for i in axes if hasattr(self.spec, i)]
 
         @property
         def used(self):
-            return tuple(1 + self.spec._names.index(i) for i in self.axes)
+            return tuple(1 + self.spec.index(i) for i in self.axes)
 
         @property
         def lo(self):
             return min(self.used) if self.used else None
 
-        def apply(self, idx, value=None):
-            seen = super().apply(idx)
+        def outslice(self, idx, value=None):
+            seen = super().outslice(idx)
             other, owned = seen[:-len(defaults)], seen[-len(defaults):]
             lo = self.lo
             if isinstance(idx, tuple) and lo is not None and len(idx) > lo:
@@ -382,11 +427,11 @@ def interface(dims=None, names=None, defaults=None):
             if isinstance(dims, int):
                 assert dims <= len(self.spec)
             elif dims is not None:
-                assert all(i in self.spec._names for i in dims)
+                assert all(hasattr(self.spec, i) for i in dims)
             if isinstance(names, int):
                 assert names <= len(self)
             elif names is not None:
-                assert all(i in self._names for i in names)
+                assert all(self.ref(i) or 1 for i in names)
             if defaults is not None and names is not None:
                 assert all(
                         getattr(self, i).dtype == j.dtype
@@ -395,6 +440,7 @@ def interface(dims=None, names=None, defaults=None):
                     assert all(
                             jnp.all(getattr(self, i) == j)
                             for i, j in zip(names, defaults)
-                            if not jnp.isnan(j) and jnp.isfinite(j))
+                            if isinstance(j, jax.Array) and
+                            not jnp.isnan(j) and jnp.isfinite(j))
     return GroupInterface
 

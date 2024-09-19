@@ -20,7 +20,7 @@ class SearchPath(outgroup(height=0), grouping(
 
 class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         ("size",), ("key", "secondary", "left", "right", "height"), (
-            jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
+            jnp.float32, jnp.int32, jnp.int32(-1), jnp.int32(-1),
             jnp.int32(1)))):
     def right_rotate(self, y):
         x = self.left[y]

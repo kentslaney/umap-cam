@@ -1,17 +1,21 @@
 from functools import partial
 import jax
 import jax.numpy as jnp
-from group import grouping
+from group import grouping, group_alias, dim_alias
+from avl import AVLsInterface
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
-class NNDHeap(grouping(
-        "NNDHeap", ("points", "size"), ("distances", "indices", "flags"),
-        (jnp.float32(jnp.inf), jnp.int32(-1), jnp.bool(False)))):
-    pass
-
 @jax.tree_util.register_pytree_node_class
-class NNDHeap(NNDHeap):
+class NNDHeap(
+        group_alias(key="distances", secondary="indices"),
+        dim_alias(trees="points"),
+        AVLsInterface,
+        grouping(
+            "NNDHeap", ("points", "size"),
+            ("distances", "indices", "flags", "left", "right", "height"), (
+                jnp.float32(jnp.inf), jnp.int32(-1), jnp.bool(False),
+                jnp.int32(-1), jnp.int32(-1), jnp.int32(1)))):
     def build(self, limit, rng):
         # want to enable asyncronous writes but need deterministic order
         # original repo's implementation interleaves threads' memory access
