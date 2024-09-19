@@ -1,6 +1,6 @@
 import jax, math
 import jax.numpy as jnp
-from group import grouping, outgroup
+from group import grouping, outgroup, marginalized, interface
 from functools import partial
 
 class LazyGetter:
@@ -18,10 +18,8 @@ class SearchPath(outgroup(height=0), grouping(
     def start(self):
         return self.shape[1] - self.height
 
-@jax.tree_util.register_pytree_node_class
-class AVLs(outgroup(root=jnp.int32(-1)), grouping(
-        "AVL", ("size",),# ("trees", "size"),
-        ("key", "secondary", "left", "right", "height"), (
+class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
+        ("size",), ("key", "secondary", "left", "right", "height"), (
             jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
             jnp.int32(1)))):
     def right_rotate(self, y):
@@ -164,8 +162,7 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
             path = path.at[:, idx].set((child, 1))
             path = path.at[:, path.start].set((grandchild, 0))
             t = t.at['left', path.path[path.start + 1]].set(grandchild)
-            t = t.at['left', child].set(t['left', x])
-            t = t.at['right', child].set(t['right', x])
+            t = t.at[('left', 'right'), child].set(t[('left', 'right'), x])
             path.height -= grandchild == -1
             return path, t, child
         def successor(args):
@@ -216,4 +213,19 @@ class AVLs(outgroup(root=jnp.int32(-1)), grouping(
         return f"{transform(self[value, root])} " + (
                 self.walk(value, self.left[root], transform) +
                 self.walk(value, self.right[root], transform))
+
+@jax.tree_util.register_pytree_node_class
+class SingularAVL(AVLsInterface, grouping(
+        "AVL", ("size",), ("key", "secondary", "left", "right", "height"), (
+            jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
+            jnp.int32(1)))):
+    pass
+
+@jax.tree_util.register_pytree_node_class
+class AVLs(AVLsInterface, grouping(
+        "AVLs", ("trees", "size"),
+        ("key", "secondary", "left", "right", "height"), (
+            jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
+            jnp.int32(1)))):
+    pass
 

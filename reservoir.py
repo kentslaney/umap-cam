@@ -3,18 +3,21 @@ import jax.numpy as jnp
 import sys, pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[0]))
-import nnd, rpt
+import nnd, rpt, group, nnd_gpu, avl
 from importlib import reload
+group = reload(group)
 nnd, rpt = reload(nnd), reload(rpt)
+avl, nnd_gpu = reload(avl), reload(nnd_gpu)
 
-from nnd import NNDHeap, NNDHeapGPU, RPCandidates
+from nnd import RPCandidates, NNDHeap
+from nnd_gpu import NNDHeap as NNDHeapGPU
 
 def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     rng = jax.random.key(0) if rng is None else rng
     if data is None:
         rng, subkey = jax.random.split(rng)
         data = jax.random.normal(subkey, (512, 8))
-    heap = NNDHeapGPU(data.shape[0], k)
+    heap = NNDHeap(data.shape[0], k)
     heap, rng = heap.randomize(data, rng)
     if n_trees != 0:
         rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
@@ -35,10 +38,11 @@ def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=No
         if any(params != prev):
             os.remove(full)
         else:
-            heap = NNDHeapGPU.tree_unflatten((), heap)
+            data = jnp.asarray(data)
     if not full.is_file():
         data, heap, _ = test_setup(*params)
         jnp.savez(full, data, heap, params)
+    heap = NNDHeapGPU.tree_unflatten((), heap)
     return data, heap
 
 def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
@@ -50,3 +54,4 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
 
 heap, data, update, step, rng = test()
 tail, head = step.links()
+print(step.bounds(data))

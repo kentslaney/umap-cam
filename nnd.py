@@ -2,7 +2,6 @@ from collections import namedtuple
 from functools import partial
 import jax
 import jax.numpy as jnp
-import jax.experimental.pallas as pl
 
 import rpt
 from group import Group, grouping, groupaux
@@ -181,81 +180,6 @@ class NNDHeap(Heap, grouping(
                 self.accumulator, self.distances[:, 0], data, self, 0,
                 dist=dist)
 
-@jax.tree_util.register_pytree_node_class
-class NNDHeapGPU(NNDHeap):
-    def build(self, limit, rng):
-        # want to enable asyncronous writes but need deterministic order
-        # original repo's implementation interleaves threads' memory access
-        # instead, start by assigning random values to avoid prng order issues
-        # first pass over indices sorted by flag: jax.scan carrying count so far
-        # second pass pallas which can have out of order write b/c cache misses
-        # reservoir sample referenced row, writing iff the prev count is smaller
-        # requires atomic read/write; jax.experimental.pallas.atomic_max
-
-        assert limit > 0, "limit should be strictly positive"
-        assert (limit & (limit - 1)) == 0, "limit should be a power of 2"
-        assert (self.shape[2] & (self.shape[2] - 1)) == 0, \
-                "n_neighbors should be a power of 2" # TODO: relax
-
-        counts = jnp.sum(self.flags, axis=1)
-        counts = jnp.asarray((self.shape[2] - counts, counts))
-        if limit < self.shape[2]:
-            rng, subkey = jax.random.split(rng)
-            order = jnp.tile(jnp.arange(self.shape[2]), (self.shape[1], 1))
-            order = jax.random.permute(subkey, order, 1, True)
-            split = jnp.take(self.flags, order, 1, unique_indices=True)
-            _, order = jax.lax.sort_key_val(split, order)
-            ordered = jnp.take(self.indices, order, 1, unique_indices=True)
-        else:
-            _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
-        ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
-
-        # could be built iteratively and stored
-        def sample_n(counts, node):
-            bound, node = node[0], node[1:]
-            valid = jnp.arange(node.size) < bound
-            return counts.at[node].add(valid), counts[node]
-        nodes = jnp.concatenate((counts[..., None], ordered), -1)
-        _, n = jax.vmap(lambda counts, nodes: jax.lax.scan(
-                sample_n, counts, nodes))(counts, nodes)
-
-        rng, subkey = jax.random.split(rng)
-        d = jax.random.uniform(subkey, ordered.shape)
-        d = jnp.int32(jnp.maximum(d, n < limit) * n)
-
-        mask = jnp.arange(limit)[None] < counts[:, :, None]
-        oob = jnp.stack((self.shape[1], limit))[None, :, None, None]
-        d = jnp.where(mask[:, None], jnp.stack((ordered, d), 1), oob)
-
-        def reservoir(idx, ref):
-            via = jnp.tile(jnp.arange(idx.shape[1])[:, None], (1, idx.shape[2]))
-            return ref.at[*idx.reshape(2, -1)].max(via.flatten(), mode="drop")
-        ref = jax.vmap(reservoir)(d, jnp.full((2, self.shape[1], limit), -1))
-
-        def backfill(count, forward, ref):
-            return jnp.where(
-                    (jnp.arange(self.shape[2]) < count) & (ref < 0),
-                    forward, ref)
-        ref = jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
-        update = self.indices[:, :limit] != ref[1, :, ::-1]
-        unset = ((0, 0), (0, max(0, limit - self.shape[2])))
-        update = jnp.pad(update, unset, constant_values=True)
-        update = self.at["flags"].set(self.flags & update)
-        return update, NNDCandidates(*ref), rng
-
-    def randomize(self, data, rng, dist=euclidean):
-        def outer(rng, i, _, existing, flags):
-            idx = jax.random.choice(
-                    rng, self.shape[1] - 1, (self.shape[2],), False)
-            idx = jnp.where(existing == -1, idx + (idx >= i), existing)
-            d = jax.vmap(dist, (0, None))(data[idx], data[i])
-            _, flags = jax.lax.sort_key_val(d, existing == -1)
-            d, idx = jax.lax.sort_key_val(d, idx)
-            return d[::-1], idx[::-1], flags
-        rng = jax.random.split(rng, self.shape[1] + 1)
-        res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
-        return self.tree_unflatten((), res), rng[0]
-
 class Candidates:
     def checked(self, apply, thresholds, data, dist):
         def inner(k, idx1, j, idx0, i, out):
@@ -264,48 +188,29 @@ class Candidates:
             cond = (d < thresholds[p]) | (d < thresholds[q])
             return jax.lax.cond(
                     (p != q) & cond, lambda: apply(p, q, d, *out), lambda: out)
+        return inner
 
-        def outer(idx, start, f):
-            idx = self[idx]
-            def loop(j, *args):
-                i, out = (j, *args)[-2:]
-                def inner(k, args):
-                    return jax.lax.cond(
-                            idx[i, k] >= 0, lambda *a: (*a[2:-1], f(*a)),
-                            lambda *a: a[2:], k, idx, *args)
-                return jax.lax.fori_loop(
-                        start(j), self.shape[2], inner, (j, *args))[-1]
-            return loop
-        return outer, inner
+    def outer(self, idx, start, f):
+        idx = self[idx]
+        def loop(j, *args):
+            i, out = (j, *args)[-2:]
+            def inner(k, args):
+                return jax.lax.cond(
+                        idx[i, k] >= 0, lambda *a: (*a[2:-1], f(*a)),
+                        lambda *a: a[2:], k, idx, *args)
+            return jax.lax.fori_loop(
+                    start(j), self.shape[2], inner, (j, *args))[-1]
+        return loop
 
 class NNDCandidates(Candidates, grouping(
         "NNDCandidates", ("points", "size"), ("old", "new"))):
     @partial(jax.jit, static_argnames=('apply', 'dist'))
     def updates(self, apply, thresholds, data, *out, dist=euclidean):
-        outer, inner = self.checked(apply, thresholds, data, dist)
-        f = outer("new", lambda i: 0, lambda *a: h(*a[:-1], g(*a)))
-        g = outer("new", lambda i: i + 1, inner)
-        h = outer("old", lambda i: 0, inner)
-        # TODO: want vmap, but has an arbitrary number of reverse neighbors
-        # https://github.com/rapidsai/raft/blob/branch-24.10/cpp/include/raft/neighbors/detail/nn_descent.cuh#L517
-        # huh?
-        # convert each linked list to an AVL tree then merge
+        inner = self.checked(apply, thresholds, data, dist)
+        f = self.outer("new", lambda i: 0, lambda *a: h(*a[:-1], g(*a)))
+        g = self.outer("new", lambda i: i + 1, inner)
+        h = self.outer("old", lambda i: 0, inner)
         return jax.lax.fori_loop(0, self.shape[1], f, out)
-
-    # could be built iteratively and stored
-    # jax.scan over rows to create a linked list of reverse neighbors
-    def links(self):
-        def linker(head, args):
-            node, i = args
-            oob = jnp.where(node == -1, self.spec.points, node)
-            res = jnp.where((node == -1)[:, None], -1, head[node])
-            col = jnp.arange(self.spec.size)
-            coords = jnp.stack((jnp.broadcast_to(i, self.spec.size), col), -1)
-            return head.at[oob].set(coords, mode="drop"), res
-        init = jnp.full((self.spec.points + 1, 2), -1)
-        f = lambda x: jax.lax.scan(
-                linker, init, (x, jnp.arange(self.spec.points)))
-        return jax.vmap(f)(jnp.stack(self))
 
 @jax.tree_util.register_pytree_node_class
 class RPCandidates(groupaux("total"), Candidates, grouping(
@@ -313,8 +218,8 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
     @partial(jax.jit, static_argnames=('apply', 'dist'))
     def updates(self, apply, thresholds, data, *out, dist=euclidean):
         outer, inner = self.checked(apply, thresholds, data, dist)
-        f = outer(0, lambda i: 0, lambda *a: g(*a))
-        g = outer(0, lambda i: i + 1, inner)
+        f = self.outer(0, lambda i: 0, lambda *a: g(*a))
+        g = self.outer(0, lambda i: i + 1, inner)
         return jax.lax.fori_loop(0, self.total, f, out)
 
     @classmethod
