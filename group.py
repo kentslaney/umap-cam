@@ -14,22 +14,6 @@ class GroupSetter:
         assert callable(f)
         return lambda *a, **kw: self.set(f(*a, **kw))
 
-class Shunt:
-    @classmethod
-    def skip(cls):
-        # skips to top, nested or not
-        return super(cls.mro()[cls.mro().index(Group) - 1], cls)
-
-    def __new__(cls, *a):
-        return cls.skip().__new__(cls, *a)
-
-    def tree_flatten(self):
-        return self.skip().tree_flatten(self)
-
-    @classmethod
-    def tree_unflatten(cls,  *a, **kw):
-        return cls.skip().tree_unflatten(*a, **kw)
-
 registered = {}
 class GroupIndirect:
     def __init__(self, group):
@@ -39,8 +23,10 @@ class GroupIndirect:
         sliced = self.group[idx]
         wrapper, wrapped = self.group.__class__, sliced.__class__
         if wrapped != wrapper:
-            wraps = type("wraps", (), {k: getattr(wrapper, k) for k in dir(wrapper) if not hasattr(wrapped, k)})
-            class Wrapping(wrapped, Shunt, wraps):
+            wraps = type("wraps", (), {
+                k: getattr(wrapper, k) for k in dir(wrapper)
+                if not hasattr(wrapped, k)})
+            class Wrapping(wrapped, wraps):
                 @classmethod
                 def tree_unflatten(cls,  *a, **kw):
                     return super().tree_unflatten(*a, **kw)
