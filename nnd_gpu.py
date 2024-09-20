@@ -62,7 +62,8 @@ class NNDHeap(
 
         def reservoir(idx, ref):
             via = jnp.tile(jnp.arange(idx.shape[1])[:, None], (1, idx.shape[2]))
-            return ref.at[*idx.reshape(2, -1)].max(via.flatten(), mode="drop")
+            return ref.at[(*idx.reshape(2, -1),)].max(
+                    via.flatten(), mode="drop")
         ref = jax.vmap(reservoir)(d, jnp.full((2, self.shape[1], limit), -1))
 
         def backfill(count, forward, ref):

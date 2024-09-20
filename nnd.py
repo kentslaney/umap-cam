@@ -14,7 +14,9 @@ class Heap(Group):
     def swapped(self, i0, i1):
         i0 = i0 if isinstance(i0, tuple) else (i0,)
         i1 = i1 if isinstance(i1, tuple) else (i1,)
-        return self.at[:, *i0].set(self[:, *i1]).at[:, *i1].set(self[:, *i0])
+        return self.at[(slice(None), *i0)].set(
+                self[(slice(None), *i1)]).at[(slice(None), *i1)].set(
+                self[(slice(None), *i0)])
 
     def sifted(self, i, bound=None):
         bound = self.order.shape[0] if bound is None else bound

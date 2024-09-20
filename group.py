@@ -39,7 +39,8 @@ class GroupIndirect:
         sliced = self.group[idx]
         wrapper, wrapped = self.group.__class__, sliced.__class__
         if wrapped != wrapper:
-            class Wrapping(wrapped, Shunt, wrapper):
+            wraps = type("wraps", (), {k: getattr(wrapper, k) for k in dir(wrapper) if not hasattr(wrapped, k)})
+            class Wrapping(wrapped, Shunt, wraps):
                 @classmethod
                 def tree_unflatten(cls,  *a, **kw):
                     return super().tree_unflatten(*a, **kw)

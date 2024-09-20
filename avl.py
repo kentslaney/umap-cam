@@ -87,27 +87,24 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 lambda a: a[0] != -1, body, (node, x, out))
         return out[:, ::-1]
 
-    @staticmethod
-    def set_left(t, ins, root):
-        return t.at['left', root].set(ins)
+    def set_left(self, ins, root):
+        return self.at['left', root].set(ins)
 
-    @staticmethod
-    def set_right(t, ins, root):
-        return t.at['right', root].set(ins)
+    def set_right(self, ins, root):
+        return self.at['right', root].set(ins)
 
-    @staticmethod
-    def set_root(t, ins, *a):
-        t.root = ins
-        return t
+    def set_root(self, ins, *a):
+        self.root = ins
+        return self
 
     def pre_balance(self, cond, root, balance):
         return jax.lax.cond(
                 cond,
                 lambda t, root, balance: jax.lax.cond(
                     balance == 1,
-                    lambda t, root: t.set_left(
+                    lambda t, root: t.__class__.set_left(
                         *t.left_rotate(t.left[root]), root),
-                    lambda t, root: t.set_right(
+                    lambda t, root: t.__class__.set_right(
                         *t.right_rotate(t.right[root]), root),
                     t, root),
                 lambda t, *a: t,
@@ -129,7 +126,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         def body(i, args):
             path, x, t, y = args
             root, sign = path[:, i]
-            t = jax.lax.cond(sign == 1, t.set_right, t.set_left, t, y, root)
+            t = jax.lax.cond(sign == 1, t.set_right, t.set_left, y, root)
             t = t.at['height', root].set(t.measured[root])
 
             balance = t.balance[root]
@@ -178,16 +175,16 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 branchless, split, path, self, x)
         t = jax.lax.cond(
                 parent == path.shape[1],
-                t.set_root, lambda t, x, path: jax.lax.cond(
+                t.__class__.set_root, lambda t, x, path: jax.lax.cond(
                     path.sign[parent] == 1, t.set_right, t.set_left,
-                    t, x, path.path[parent]), t, x, path)
+                    x, path.path[parent]), t, x, path)
         def body(i, args):
             path, t, x = args
             root, sign = path[:, i]
             t = jax.lax.cond(
                     x == -1, lambda t, *a: t,
                     lambda t, x, root: jax.lax.cond(
-                        sign == 1, t.set_right, t.set_left, t, x, root),
+                        sign == 1, t.set_right, t.set_left, x, root),
                     t, x, root)
             t = t.at['height', root].set(t.measured[root])
 
