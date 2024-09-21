@@ -20,6 +20,7 @@ for i in range(keys.size):
     t = t.at[:, 0].insert(i)
 
 print(t.indirect[:, 0].walk(transform=int))
+print(t.indirect[:, 0].search(25, -1))
 
 keys = jnp.asarray([9, 5, 10, 0, 6, 11, -1, 1, 2])
 t = t.at['key', 1, :keys.size].set(keys)

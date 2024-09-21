@@ -57,12 +57,15 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 self.depth[self.left[x]], self.depth[self.right[x]]))
 
     def cmp(self, x, y):
+        return self.sign(self.key[x], self.secondary[x], y)
+
+    def sign(self, primary, secondary, y):
         return jnp.where(
-                self.key[x] != self.key[y],
-                jnp.where(self.key[x] > self.key[y], 1, -1),
+                primary != self.key[y],
+                jnp.where(primary > self.key[y], 1, -1),
                 jnp.where(
-                    self.secondary[x] == self.secondary[y], 0,
-                    jnp.where(self.secondary[x] > self.secondary[y], 1, -1)))
+                    secondary == self.secondary[y], 0,
+                    jnp.where(secondary > self.secondary[y], 1, -1)))
 
     @property
     def bound(self):
@@ -76,16 +79,29 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         node = self.root
         out = SearchPath(self.bound)
         def body(args):
-            node, x, out = args
+            node, out = args
             sign = self.cmp(x, node)
             out = out.at[:, out.height].set((node, sign))
             out.height += 1
             node = jnp.where(sign == 0, -1, jnp.where(
                     sign == 1, self.right[node], self.left[node]))
-            return node, x, out
-        node, _, out = jax.lax.while_loop(
-                lambda a: a[0] != -1, body, (node, x, out))
+            return node, out
+        node, out = jax.lax.while_loop(
+                lambda a: a[0] != -1, body, (node, out))
         return out[:, ::-1]
+
+    @jax.jit
+    def search(self, primary, secondary):
+        node = self.root
+        def body(args):
+            node, _, _ = args
+            sign = self.sign(primary, secondary, node)
+            update = jnp.where(sign == 0, -1, jnp.where(
+                    sign == 1, self.right[node], self.left[node]))
+            return update, node, sign
+        _, node, sign = jax.lax.while_loop(
+                lambda a: a[0] != -1, body, (node, node, 0))
+        return (node, sign)
 
     def set_left(self, ins, root):
         return self.at['left', root].set(ins)
@@ -212,12 +228,14 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 self.walk(value, self.right[root], transform))
 
 class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
+    @jax.jit
     def insert(self, x):
         self = AVLsInterface.insert(self, x)
         self.max = jnp.where(self.max == -1, x, jnp.where(
                 self.cmp(x, self.max) == 1, x, self.max))
         return self
 
+    @jax.jit
     def remove(self, x):
         self = AVLsInterface.remove(self, x)
         self.max = jax.lax.cond(
