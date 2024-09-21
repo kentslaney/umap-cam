@@ -55,5 +55,6 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     return (heap, data) + heap.build(max_candidates, rng)
 
 heap, data, update, step, rng = test()
-tail, head = step.links()
-print(step.bounds(data))
+# tail, head = step.links()
+# print(step.bounds(data))
+print(heap)

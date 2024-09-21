@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from group import grouping, group_alias, dim_alias
-from avl import AVLsInterface
+from avl import MaxAVL
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
@@ -10,7 +10,7 @@ euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 class NNDHeap(
         group_alias(key="distances", secondary="indices"),
         dim_alias(trees="points"),
-        AVLsInterface,
+        MaxAVL,
         grouping(
             "NNDHeap", ("points", "size"),
             ("distances", "indices", "flags", "left", "right", "height"), (

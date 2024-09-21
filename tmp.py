@@ -27,6 +27,8 @@ for i in range(keys.size):
     t = t.at[:, 1].insert(i)
 
 print(t.indirect[:, 1].walk(transform=int))
-t = t.at[:, 1].remove(2)
+print(t.max[1])
+t = t.at[:, 1].remove(5)
 print(t.indirect[:, 1].walk(transform=int))
+print(t.max[1])
 

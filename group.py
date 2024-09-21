@@ -67,8 +67,7 @@ class Group:
         return dict(zip(self.aux_keys, self.aux_data))
 
     def aux_keyed(self, keying):
-        meta = groupaux(**self.aux_dict)
-        return type(keying.__name__, (meta, keying), {})
+        return keying
 
     @property
     def out(self):
@@ -100,7 +99,7 @@ class Group:
         return idx, sel, tuple(fields)
 
     def outslice(self, idx, value=None):
-        return self.out
+        return ()
 
     def __getitem__(self, idx):
         if not isinstance(idx, tuple):
@@ -177,14 +176,11 @@ class Group:
         return cls.tree_unflatten(xa, tuple(
                 jnp.where(cond, i, j) for i, j in zip(xc, yc)))
 
-# TODO: order shouldn't matter (ideally) or it should at least error
-#       while I'm there, reduce boilerplate
 def group_alias(**kw):
     class GroupAliased:
         def aux_keyed(self, keying):
-            keying = super().aux_keyed(keying)
-            meta = group_alias(**kw)
-            return type(keying.__name__, (meta, keying), {})
+            return type(keying.__name__, (
+                    GroupAliased, super().aux_keyed(keying)), {})
 
         def ref(self, key):
             return super().ref(
@@ -193,7 +189,6 @@ def group_alias(**kw):
         def __getattr__(self, key):
             if key in kw:
                 return getattr(self, kw[key])
-            return super.__getattr__(key)
 
     return GroupAliased
 
@@ -210,9 +205,8 @@ def dim_alias(**kw):
 
     class DimAliased:
         def aux_keyed(self, keying):
-            keying = super().aux_keyed(keying)
-            meta = dim_alias(**kw)
-            return type(keying.__name__, (meta, keying), {})
+            return type(keying.__name__, (
+                    DimAliased, super().aux_keyed(keying)), {})
 
         @property
         def spec(self):
@@ -327,6 +321,14 @@ def groupaux(*required, **optional):
             aux_data += tuple(getattr(self, k) for k in order)
             return children, aux_data
 
+        @property
+        def order(self):
+            return order
+
+        def aux_keyed(self, keying):
+            return type(keying.__name__, (
+                    GroupAux, super().aux_keyed(keying)), {})
+
         @classmethod
         def tree_unflatten(cls, aux_data, children):
             assert len(aux_data) >= len(order), f"{aux_data} {order}"
@@ -354,14 +356,16 @@ def outgroup(*required, **optional):
             return super().tree_unflatten(*swap(aux_data, children)).deaux()
 
         def deaux(self):
-            n = len(self.aux_dict) - count
-            self._order = self.aux_keys[n:]
-            self.aux_keys = self.aux_keys[:n]
+            self.aux_keys = self.aux_keys[:len(self.aux_keys) - count]
             return self
 
+        def outslice(self, idx, value=None):
+            other = super().outslice(idx, value)
+            return other + tuple(getattr(self, i) for i in super().order)
+
         def aux_keyed(self, keying):
-            meta = outgroup(**{i: getattr(self, i) for i in self._order})
-            return type(keying.__name__, (meta, keying), {})
+            return type(keying.__name__, (
+                    OutGroup, super().aux_keyed(keying)), {})
     return OutGroup
 
 def marginalized(*axes, **defaults):
@@ -369,7 +373,7 @@ def marginalized(*axes, **defaults):
     class Margin(outgroup(**defaults)):
         def __new__(cls, *a, **kw):
             obj = super().__new__(cls, *a, **kw)
-            shape = [getattr(obj.spec, i) for i in obj.axes]
+            shape = [getattr(obj.spec, i) for i in axes]
             for k in defaults.keys():
                 setattr(obj, k, jnp.full(shape, getattr(obj, k)))
             return obj
@@ -387,7 +391,7 @@ def marginalized(*axes, **defaults):
             return min(self.used) if self.used else None
 
         def outslice(self, idx, value=None):
-            seen = super().outslice(idx)
+            seen = super().outslice(idx, value)
             other, owned = seen[:-len(defaults)], seen[-len(defaults):]
             lo = self.lo
             if isinstance(idx, tuple) and lo is not None and len(idx) > lo:
@@ -398,13 +402,12 @@ def marginalized(*axes, **defaults):
                     owned = tuple(
                             i.at[slices].set(getattr(value, k))
                             if hasattr(value, k) else i
-                            for k, i in zip(self._order, owned))
+                            for k, i in zip(super().order, owned))
             return other + owned
 
         def aux_keyed(self, keying):
-            meta = marginalized(
-                    *self.axes, **{i: getattr(self, i) for i in defaults})
-            return type(keying.__name__, (meta, keying), {})
+            return type(keying.__name__, (
+                    Margin, super().aux_keyed(keying)), {})
     return Margin
 
 def interface(dims=None, names=None, defaults=None):

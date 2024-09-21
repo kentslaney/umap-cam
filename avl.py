@@ -211,15 +211,34 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 self.walk(value, self.left[root], transform) +
                 self.walk(value, self.right[root], transform))
 
+class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
+    def insert(self, x):
+        self = AVLsInterface.insert(self, x)
+        self.max = jnp.where(self.max == -1, x, jnp.where(
+                self.cmp(x, self.max) == 1, x, self.max))
+        return self
+
+    def remove(self, x):
+        self = AVLsInterface.remove(self, x)
+        self.max = jax.lax.cond(
+                x == self.max,
+                lambda t: jax.lax.while_loop(
+                    lambda a: a[0] != -1,
+                    lambda a: (a[2].right[a[0]], a[0], a[2]),
+                    (t.root, t.root, t))[1],
+                lambda t: t.max,
+                self)
+        return self
+
 @jax.tree_util.register_pytree_node_class
-class SingularAVL(AVLsInterface, grouping(
+class SingularAVL(MaxAVL, grouping(
         "AVL", ("size",), ("key", "secondary", "left", "right", "height"), (
             jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
             jnp.int32(1)))):
     pass
 
 @jax.tree_util.register_pytree_node_class
-class AVLs(AVLsInterface, grouping(
+class AVLs(MaxAVL, grouping(
         "AVLs", ("trees", "size"),
         ("key", "secondary", "left", "right", "height"), (
             jnp.float32(jnp.nan), jnp.int32(-1), jnp.int32(-1), jnp.int32(-1),
