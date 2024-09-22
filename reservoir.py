@@ -26,7 +26,9 @@ def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
 
 # data, heap, _ = test_setup()
 
-def test_cached(data=None, k=16, rng=None, max_candidates=16, n_trees=1, path=None, uniq="reservoir"):
+def test_cached(
+        data=None, k=16, rng=None, max_candidates=16, n_trees=1,
+        path=None, uniq="reservoir"):
     import pathlib
     path = pathlib.Path.cwd() if path is None else pathlib.Path(path)
     path = path.parents[0] if path.is_file() else path
@@ -56,7 +58,8 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
 
 heap, data, update, step, rng = test()
 # data, heap = test_cached()
-heap = heap.vmap().batched()
-# links = step.links()
-print(step.bounds(data, heap, True))
+heap = heap.remap().batched()
+links = step.links()
+bounds = step.bounds(data, heap, True)
+print(links.rebuild(step, bounds, heap, data))
 # print(heap)

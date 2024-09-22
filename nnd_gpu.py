@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from group import grouping, group_alias, dim_alias, marginalized
-from avl import MaxAVL
+from avl import SingularAVL, MaxAVL, AVLs
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
@@ -87,13 +87,45 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
+    def vet(self, step, bound, data, split, idx, side, coords):
+        args = (self, step, bound, data, split, idx, side, coords)
+        print(*(i.shape for i in args))
+        return
+        # TODO: add to bin, insert (batch when full, then avl insert) into out,
+        #       recalculate step data for coords, update loop bound
+        def body(args):
+            coords, bound, bins, full = args
+        # TODO: bound, check with self
+        def cond(args):
+            coords, bound, bins, full = args
+        # TODO: while_loop with bound[coords]
+        def loop(a):
+            coords, out, bins, full = a
+            return split[coords], out, bins, full
+        out = SingularAVL(self.shape[1])
+        bins = jnp.zeros(self.shape[1])
+        _, out, bins, full = jax.lax.while_loop(
+                lambda a: jnp.all(a[0] != -1), loop, (coords, out, bins, 0))
+
+@jax.tree_util.register_pytree_node_class
 class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
         "Links", ("splits", "points", "size", "addresses"), ("head",))):
-    pass
+    @jax.jit
+    def rebuild(self, step, bound, heap, data):
+        order = jnp.tile(jnp.arange(self.shape[2]), (2, 1))
+        side = jnp.tile(jnp.arange(2)[:, None], (1, self.shape[2]))
+        res = bound.vmap(in_axes=(0, None, 0, 0, 0, 0)).alongside(
+                heap, step, in_axes=None).following(
+                    data, self.head, order, side, self.tail)
+        # TODO: combine sides' AVLs
+        return res
 
+@jax.tree_util.register_pytree_node_class
 class Bounds(grouping(
         "Bounds", ("splits", "points", "size"), ("distances", "indices"))):
-    pass
+    def following(self, heap, step, data, split, idx, side, coords):
+        heap.vmap((0, None, None, 0, 0, 0)).alongside(step, self).vet(
+                data, split, idx, side, coords)
 
 class Candidates:
     # could be built iteratively and stored
@@ -106,7 +138,7 @@ class Candidates:
             col = jnp.arange(self.spec.size)
             coords = jnp.stack((jnp.broadcast_to(i, self.spec.size), col), -1)
             return head.at[oob].set(coords, mode="drop"), res
-        init = jnp.full((self.spec.points + 1, 2), -1)
+        init = jnp.full((self.spec.points, 2), -1)
         f = lambda x: jax.lax.scan(
                 linker, init, (x, jnp.arange(self.spec.points)))
         res = jax.vmap(f)(jnp.stack(self))

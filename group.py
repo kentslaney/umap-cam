@@ -50,28 +50,65 @@ class GroupAt:
         return GroupSetter(self.group, i if isinstance(i, tuple) else (i,))
 
 class GroupMap:
-    def __init__(self, group, in_axes=0, *a, **kw):
-        in_axes = (in_axes,) if isinstance(in_axes, int) else in_axes
-        in_axes = () if in_axes is None else in_axes
-        self.in_axes = (group.ref(in_axes[0]),) + tuple(in_axes[1:])
-        self.group, self.a, self.kw = group, a, kw
+    def __init__(self, group, remap, in_axes=0, *a, **kw):
+        self.group, self.remap = group, remap
+        self.in_axes, self.a, self.kw = in_axes, a, kw
+        self.sliced, self.flat, self.side_axes = ((),) * 3
+
+    def alongside(self, *a, in_axes=0):
+        in_axes = (in_axes,) * len(a) if isinstance(
+                in_axes, int) or in_axes is None else in_axes
+        sliced, flat, in_axes = zip(*(self._axis(*i) for i in zip(in_axes, a)))
+        self.flat, self.sliced = self.flat + flat, self.sliced + sliced
+        self.side_axes += sum(in_axes, ())
+        return self
 
     def __getattr__(self, key):
         assert callable(getattr(self.group, key))
         return lambda *a: self._map(key, a)
 
+    def _axis(self, in_axes, group, *a):
+        _in_axes = (in_axes,) if isinstance(in_axes, int) else in_axes
+        _in_axes = (None,) if _in_axes is None else _in_axes
+        _in_axes = (group.ref(_in_axes[0]),) + tuple(_in_axes[1:])
+
+        if _in_axes[0] is None:
+            sliced = group.__class__
+        else:
+            sliced = (*(slice(None),) * (_in_axes[0] + 1), 0)
+            sliced = group.indirect[sliced].__class__
+        children, aux = group.tree_flatten()
+
+        _in_axes = (None, *_in_axes[:1] * len(children)) + _in_axes[1:]
+        _in_axes += (in_axes,) * (len(a) if isinstance(in_axes, int) else 0)
+        return sliced, (aux, *children), _in_axes
+
+    def _unflatten(self, a):
+        sizes, bounds, total = map(len, ((),) + self.flat), [], 0
+        for i in sizes:
+            total += i
+            bounds.append(total)
+        return tuple(
+                sliced.tree_unflatten(a[begin], a[begin + 1:end])
+                for sliced, begin, end in zip(
+                    self.sliced, bounds[:-1], bounds[1:]))
+
     def _map(self, key, a):
-        sliced = (*(slice(None),) * (self.in_axes[0] + 1), 0)
-        sliced = self.group.indirect[sliced].__class__
-        f = getattr(sliced, key)
-        children, aux = self.group.tree_flatten()
-        in_axes = (None, *self.in_axes[:1] * len(children)) + self.in_axes[1:]
+        sliced, flat, in_axes = self._axis(self.in_axes, self.group, *a)
+        in_axes = in_axes[:len(flat)] + self.side_axes + in_axes[len(flat):]
+        _flat = flat + sum(self.flat, ())
         def g(aux, *a):
-            subset = sliced.tree_unflatten(aux, a[:len(children)])
-            res = sliced.tree_flatten(f(subset, *a[len(children):]))
-            return (res[1], *res[0])
-        res = jax.vmap(g, in_axes, *self.a, **self.kw)(aux, *children, *a)
-        return self.group.tree_unflatten(res[0], res[1:len(children) + 1],)
+            subset = (sliced.tree_unflatten(flat[0], a[:len(flat) - 1]),)
+            subset += self._unflatten(a[len(flat) - 1:len(_flat) - 1])
+            res = getattr(sliced, key)(*subset, *a[len(_flat) - 1:])
+            if self.remap:
+                res = sliced.tree_flatten(res)
+                return (res[1], *res[0])
+            return res
+        res = jax.vmap(g, in_axes, *self.a, **self.kw)(*_flat, *a)
+        if self.remap:
+            return self.group.tree_unflatten(res[0], res[1:len(flat)],)
+        return res
 
 class Group:
     def __new__(cls, *a, **kw):
@@ -201,7 +238,10 @@ class Group:
                 jnp.where(cond, i, j) for i, j in zip(xc, yc)))
 
     def vmap(self, *a, **kw):
-        return GroupMap(self, *a, **kw)
+        return GroupMap(self, False, *a, **kw)
+
+    def remap(self, *a, **kw):
+        return GroupMap(self, True, *a, **kw)
 
 def group_alias(**kw):
     class GroupAliased:
@@ -400,7 +440,7 @@ def marginalized(*axes, **defaults):
     class Margin(outgroup(**defaults)):
         def __new__(cls, *a, **kw):
             obj = super().__new__(cls, *a, **kw)
-            shape = [getattr(obj.spec, i) for i in axes]
+            shape = [getattr(obj.spec, i) for i in axes if hasattr(obj.spec, i)]
             for k in defaults.keys():
                 setattr(obj, k, jnp.full(shape, getattr(obj, k)))
             return obj
