@@ -61,11 +61,11 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
 
     def sign(self, primary, secondary, y):
         return jnp.where(
-                primary != self.key[y],
-                jnp.where(primary > self.key[y], 1, -1),
+                jnp.isclose(primary, self.key[y]),
                 jnp.where(
                     secondary == self.secondary[y], 0,
-                    jnp.where(secondary > self.secondary[y], 1, -1)))
+                    jnp.where(secondary > self.secondary[y], 1, -1)),
+                jnp.where(primary > self.key[y], 1, -1))
 
     @property
     def bound(self):
@@ -102,6 +102,10 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         _, node, sign = jax.lax.while_loop(
                 lambda a: a[0] != -1, body, (node, node, 0))
         return (node, sign)
+
+    def contains(self, primary, secondary):
+        node, sign = self.search(primary, secondary)
+        return (node != -1) & (sign == 0)
 
     def set_left(self, ins, root):
         return self.at['left', root].set(ins)
@@ -226,6 +230,44 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         return f"{transform(self[value, root])} " + (
                 self.walk(value, self.left[root], transform) +
                 self.walk(value, self.right[root], transform))
+
+    @jax.jit
+    def batched(self):
+        filled = self.secondary != -1
+        pop = jnp.sum(filled)
+        idx = jnp.arange(self.spec.size)
+        order = (1 - filled, self.key, self.secondary, idx)
+        order = jax.lax.sort(order, num_keys=2)[3]
+        bound = jnp.int32(jnp.ceil(jnp.log2(pop + 1)))
+
+        pos, size = idx + 1, jnp.full(self.spec.size, pop)
+        left, right = jnp.zeros((2, self.spec.size), dtype=jnp.int32)
+        height = jnp.ones(self.spec.size, dtype=jnp.int32)
+
+        def body(i, args):
+            pos, left, right, height, size = args
+            size -= (height == 1) * 1
+            large = -(-size // 2)
+            size = large - (size % 2) * (pos > large)
+            pos = pos % (large + 1)
+            left += (left == 0) * (pos == 0) * (((large - 1) // 2) + 1)
+            right += (right == 0) * (pos == 0) * (1 - ((1 - size) // 2))
+            height += (height == 1) * (pos == 0) * jnp.int32(
+                    jnp.ceil(jnp.log2(large + 1)))
+            return pos, left, right, height, size
+        pos, left, right, height, size = jax.lax.fori_loop(
+                1, bound, body, (pos, left, right, height, size))
+        right -= size == 0
+        filled *= -1
+        height = height & filled | (~filled & 1)
+
+        left = (idx - left) - (idx + 1) * (left == 0)
+        right = (idx + right) - (idx + 1) * (right == 0)
+        left, right = left | ~filled, right | ~filled
+        left, right, height = left[order], right[order], height[order]
+        self.root = order[-((1 - pop) // 2)]
+        self.max = order[pop - 1]
+        return self.at[('left', 'right', 'height'),].set((left, right, height))
 
 class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
     @jax.jit

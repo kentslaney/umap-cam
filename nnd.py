@@ -76,9 +76,7 @@ class Heap(Group):
         value = tuple(
                 jnp.asarray(i) if isinstance(i, (int, float))
                 else i for i in value)
-        class Inserting(self[:len(value), 0].__class__, Heap):
-            pass
-        ins = Inserting.tree_unflatten(self.aux_data, value)
+        ins = self.indirect[:len(value), 0].tree_unflatten(self.aux_data, value)
         res = (ins.order < self.order[0]) & jnp.all(jnp.asarray(tuple(
                 self.check(ins, i) for i in checked)))
 

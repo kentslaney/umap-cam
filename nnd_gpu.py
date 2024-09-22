@@ -1,7 +1,7 @@
 from functools import partial
 import jax
 import jax.numpy as jnp
-from group import grouping, group_alias, dim_alias
+from group import grouping, group_alias, dim_alias, marginalized
 from avl import MaxAVL
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
@@ -26,9 +26,6 @@ class NNDHeap(
         # requires atomic read/write; jax.experimental.pallas.atomic_max
 
         assert limit > 0, "limit should be strictly positive"
-        assert (limit & (limit - 1)) == 0, "limit should be a power of 2"
-        assert (self.shape[2] & (self.shape[2] - 1)) == 0, \
-                "n_neighbors should be a power of 2" # TODO: relax
 
         counts = jnp.sum(self.flags, axis=1)
         counts = jnp.asarray((self.shape[2] - counts, counts))
@@ -90,6 +87,10 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
+class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
+        "Links", ("splits", "points", "size", "addresses"), ("head",))):
+    pass
+
 class Candidates:
     # could be built iteratively and stored
     # jax.scan over rows to create a linked list of reverse neighbors
@@ -104,26 +105,38 @@ class Candidates:
         init = jnp.full((self.spec.points + 1, 2), -1)
         f = lambda x: jax.lax.scan(
                 linker, init, (x, jnp.arange(self.spec.points)))
-        return jax.vmap(f)(jnp.stack(self))
+        res = jax.vmap(f)(jnp.stack(self))
+        return Links.tree_unflatten((), res[::-1])
 
     # requires some re-computing, but low memory and high cache coherence
-    def bound(self, idx0, idx1, data, dist=euclidean):
-        @partial(jax.vmap, in_axes=(0, None, None))
-        def el_row(x, y, data):
+    def bound(self, idx0, idx1, data, heap, prune=False, dist=euclidean):
+        row = heap.indirect[:, 0]
+        tree = row.__class__
+        children = heap.tree_flatten()[0]
+        args = len(children)
+        @partial(jax.vmap, in_axes=(0, 0, None, None, *(0,) * args))
+        def row_row(x, y, data, *heap):
+            return el_row(x, y, data, *heap)
+        @partial(jax.vmap, in_axes=(0, None, None, None, *(None,) * args))
+        def el_row(x, y, data, *heap):
             skip = x == -1
-            out = jnp.where(skip, jnp.float32(jnp.inf)[None], el_el(x, y, data))
+            res = el_el(x, y, data, *heap)
+            out = jnp.where(skip, jnp.float32(jnp.inf)[None], res)
             lo = jnp.argmin(out)
             return y[lo], out[lo]
-        @partial(jax.vmap, in_axes=(None, 0, None))
-        def el_el(x, y, data):
+        @partial(jax.vmap, in_axes=(None, 0, None, None, *(None,) * args))
+        def el_el(x, y, data, aux, *heap):
+            d = dist(data[x], data[y])
+            heap = tree.tree_unflatten(aux, heap)
             skip = (x == y) | (y == -1)
-            # TODO: skip if y in x knn already
-            return jnp.where(skip, jnp.inf, dist(data[x], data[y]))
-        return jax.vmap(el_row, (0, 0, None))(self[idx0], self[idx1], data)
+            if prune:
+                skip |= heap.contains(d, y)
+            return jnp.where(skip, jnp.inf, d)
+        return row_row(self[idx0], self[idx1], data, heap.aux_data, *children)
 
-    @partial(jax.jit, static_argnames=('dist',))
-    def bounds(self, data, dist=euclidean):
-        return tuple(self.bound(0, i, data) for i in range(len(self)))
+    @partial(jax.jit, static_argnames=('prune', 'dist'))
+    def bounds(self, data, heap, prune=False, dist=euclidean):
+        return tuple(self.bound(0, i, data, heap) for i in range(len(self)))
 
 class NNDCandidates(Candidates, grouping(
         "NNDCandidates", ("points", "size"), ("old", "new"))):
