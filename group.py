@@ -193,7 +193,7 @@ def group_alias(**kw):
     return GroupAliased
 
 def dim_alias(**kw):
-    class Alias:
+    class Alias(Named):
         def __init__(self, ln, **kw):
             self.ln, self.kw = ln, kw
 
