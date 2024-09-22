@@ -91,6 +91,10 @@ class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
         "Links", ("splits", "points", "size", "addresses"), ("head",))):
     pass
 
+class Bounds(grouping(
+        "Bounds", ("splits", "points", "size"), ("distances", "indices"))):
+    pass
+
 class Candidates:
     # could be built iteratively and stored
     # jax.scan over rows to create a linked list of reverse neighbors
@@ -123,7 +127,7 @@ class Candidates:
             res = el_el(x, y, data, *heap)
             out = jnp.where(skip, jnp.float32(jnp.inf)[None], res)
             lo = jnp.argmin(out)
-            return y[lo], out[lo]
+            return out[lo], y[lo]
         @partial(jax.vmap, in_axes=(None, 0, None, None, *(None,) * args))
         def el_el(x, y, data, aux, *heap):
             d = dist(data[x], data[y])
@@ -136,7 +140,8 @@ class Candidates:
 
     @partial(jax.jit, static_argnames=('prune', 'dist'))
     def bounds(self, data, heap, prune=False, dist=euclidean):
-        return tuple(self.bound(0, i, data, heap) for i in range(len(self)))
+        res = tuple(self.bound(0, i, data, heap) for i in range(len(self)))
+        return Bounds.tree_unflatten((), tuple(map(jnp.stack, zip(*res))))
 
 class NNDCandidates(Candidates, grouping(
         "NNDCandidates", ("points", "size"), ("old", "new"))):

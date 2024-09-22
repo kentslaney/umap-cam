@@ -266,7 +266,6 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         left, right = left | ~filled, right | ~filled
         left, right, height = left[order], right[order], height[order]
         self.root = order[-((1 - pop) // 2)]
-        self.max = order[pop - 1]
         return self.at[('left', 'right', 'height'),].set((left, right, height))
 
 class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
@@ -288,6 +287,11 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
                     (t.root, t.root, t))[1],
                 lambda t: t.max,
                 self)
+        return self
+
+    def batched(self):
+        self = AVLsInterface.batched(self)
+        self.max = jnp.argmax(self.key)
         return self
 
 @jax.tree_util.register_pytree_node_class

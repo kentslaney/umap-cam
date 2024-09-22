@@ -49,6 +49,30 @@ class GroupAt:
     def __getitem__(self, i):
         return GroupSetter(self.group, i if isinstance(i, tuple) else (i,))
 
+class GroupMap:
+    def __init__(self, group, in_axes=0, *a, **kw):
+        in_axes = (in_axes,) if isinstance(in_axes, int) else in_axes
+        in_axes = () if in_axes is None else in_axes
+        self.in_axes = (group.ref(in_axes[0]),) + tuple(in_axes[1:])
+        self.group, self.a, self.kw = group, a, kw
+
+    def __getattr__(self, key):
+        assert callable(getattr(self.group, key))
+        return lambda *a: self._map(key, a)
+
+    def _map(self, key, a):
+        sliced = (*(slice(None),) * (self.in_axes[0] + 1), 0)
+        sliced = self.group.indirect[sliced].__class__
+        f = getattr(sliced, key)
+        children, aux = self.group.tree_flatten()
+        in_axes = (None, *self.in_axes[:1] * len(children)) + self.in_axes[1:]
+        def g(aux, *a):
+            subset = sliced.tree_unflatten(aux, a[:len(children)])
+            res = sliced.tree_flatten(f(subset, *a[len(children):]))
+            return (res[1], *res[0])
+        res = jax.vmap(g, in_axes, *self.a, **self.kw)(aux, *children, *a)
+        return self.group.tree_unflatten(res[0], res[1:len(children) + 1],)
+
 class Group:
     def __new__(cls, *a, **kw):
         assert hasattr(cls, "spec")
@@ -175,6 +199,9 @@ class Group:
         (xc, xa), (yc, _) = x.tree_flatten(), y.tree_flatten()
         return cls.tree_unflatten(xa, tuple(
                 jnp.where(cond, i, j) for i, j in zip(xc, yc)))
+
+    def vmap(self, *a, **kw):
+        return GroupMap(self, *a, **kw)
 
 def group_alias(**kw):
     class GroupAliased:
