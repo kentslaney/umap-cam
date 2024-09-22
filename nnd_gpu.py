@@ -87,8 +87,8 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
-    def vet(self, step, bound, data, split, idx, side, coords):
-        args = (self, step, bound, data, split, idx, side, coords)
+    def vet(self, step, links, bound, data, idx, side):
+        args = (self, step, links.head, links.tail, bound, data, idx, side)
         print(*(i.shape for i in args))
         return
         # TODO: add to bin, insert (batch when full, then avl insert) into out,
@@ -100,12 +100,14 @@ class NNDHeap(
             coords, bound, bins, full = args
         # TODO: while_loop with bound[coords]
         def loop(a):
-            coords, out, bins, full = a
-            return split[coords], out, bins, full
+            split, coords, out, bins, full = a
+            return split, split[coords], out, bins, full
         out = SingularAVL(self.shape[1])
         bins = jnp.zeros(self.shape[1])
-        _, out, bins, full = jax.lax.while_loop(
-                lambda a: jnp.all(a[0] != -1), loop, (coords, out, bins, 0))
+        for split, coords in zip(links.head, links.tail):
+            _, out, bins, full = jax.lax.while_loop(
+                    lambda a: jnp.all(a[0] != -1), loop,
+                    (split, coords, out, bins, 0))
 
 @jax.tree_util.register_pytree_node_class
 class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
@@ -114,18 +116,16 @@ class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
     def rebuild(self, step, bound, heap, data):
         order = jnp.tile(jnp.arange(self.shape[2]), (2, 1))
         side = jnp.tile(jnp.arange(2)[:, None], (1, self.shape[2]))
-        res = bound.vmap(in_axes=(0, None, 0, 0, 0, 0)).alongside(
-                heap, step, in_axes=None).following(
-                    data, self.head, order, side, self.tail)
-        # TODO: combine sides' AVLs
-        return res
+        return bound.vmap(in_axes=(0, None, 0, 0)).alongside(
+                heap, step, self, in_axes=None).following(
+                    data, order, side)
 
 @jax.tree_util.register_pytree_node_class
 class Bounds(grouping(
         "Bounds", ("splits", "points", "size"), ("distances", "indices"))):
-    def following(self, heap, step, data, split, idx, side, coords):
-        heap.vmap((0, None, None, 0, 0, 0)).alongside(step, self).vet(
-                data, split, idx, side, coords)
+    def following(self, heap, step, links, data, idx, side):
+        heap.vmap((0, None, 0, 0)).alongside(
+                step, links, self, in_axes=(0, 1, 0)).vet(data, idx, side)
 
 class Candidates:
     # could be built iteratively and stored
