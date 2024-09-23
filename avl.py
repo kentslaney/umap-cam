@@ -231,6 +231,21 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 self.walk(value, self.left[root], transform) +
                 self.walk(value, self.right[root], transform))
 
+    def acyclic(self):
+        q = jnp.full(self.spec.size, -1).at[0].set(self.root)
+        def body(node):
+            return self.left[node], self.right[node]
+        def loop(i, args):
+            q, res = args
+            l, r = jax.vmap(lambda n: jax.lax.cond(
+                n != -1, body, lambda n: (n, -1), n))(q)
+            q = jnp.concatenate((l, r))
+            s, q = jax.lax.sort_key_val(q == -1, q)
+            return q[:self.spec.size], res & s[self.spec.size]
+        q, res = jax.lax.fori_loop(0, self.spec.size, loop, (q, True))
+        res &= jnp.all(q == -1)
+        return res
+
     @jax.jit
     def batched(self):
         filled = self.secondary != -1
@@ -264,6 +279,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         left = (idx - left) - (idx + 1) * (left == 0)
         right = (idx + right) - (idx + 1) * (right == 0)
         left, right = left | ~filled, right | ~filled
+        # TODO: should be 2 levels of indirection
         left, right, height = left[order], right[order], height[order]
         self.root = order[-((1 - pop) // 2)]
         return self.at[('left', 'right', 'height'),].set((left, right, height))

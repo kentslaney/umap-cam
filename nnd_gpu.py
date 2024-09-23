@@ -87,27 +87,53 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
-    def vet(self, step, links, bound, data, idx, side):
-        args = (self, step, links.head, links.tail, bound, data, idx, side)
-        print(*(i.shape for i in args))
-        return
-        # TODO: add to bin, insert (batch when full, then avl insert) into out,
-        #       recalculate step data for coords, update loop bound
+    def vet(self, step, bound, coords, links, data, idx, side):
+        # args = (self, step, bound, coords, links, data, idx, side)
+        # print(*(i.shape for i in args))
+        # return
+        def buffer(value, out, full):
+            out = out.at[('key', 'secondary'), full].set(value)
+            return full + 1, jax.lax.cond(
+                    full == self.shape[1] - 1, lambda out: out.batched(),
+                    lambda out: out, out)
+
+        def replace(value, out, full):
+            pos = out.max
+            out = out.remove(pos)
+            out = out.at[('key', 'secondary'), pos].set(value)
+            out.insert(pos)
+            return full, out
+
+        # TODO: recalculate step data for coords, update loop bound, trim out
         def body(args):
-            coords, bound, bins, full = args
-        # TODO: bound, check with self
+            # primary/secondary bounds
+            primary, secondary, value, out, full = args
+            full, out = jax.lax.cond(
+                    full < self.shape[1], buffer, replace, value, out, full)
+            # TODO: remove sum
+            return primary + 1000, secondary + 1000, value, out, full
         def cond(args):
-            coords, bound, bins, full = args
-        # TODO: while_loop with bound[coords]
+            primary, secondary, value, out, full = args
+            hi = self.key[self.max]
+            return (
+                    (primary < hi) | (
+                        (jnp.isclose(primary, hi) &
+                        (secondary < self.secondary[self.max])))
+                    ) & ~self.contains(*value)
         def loop(a):
-            split, coords, out, bins, full = a
-            return split, split[coords], out, bins, full
+            coords, split, out, full = a
+            out, full = jax.lax.while_loop(cond, body, (
+                    *bound[(slice(None), *coords)],
+                    step[(slice(None), *coords)], out, full))[-2:]
+            return split[tuple(coords)], split, out, full
         out = SingularAVL(self.shape[1])
-        bins = jnp.zeros(self.shape[1])
-        for split, coords in zip(links.head, links.tail):
-            _, out, bins, full = jax.lax.while_loop(
+        for split, coords in zip(links, coords):
+            out, full = jax.lax.while_loop(
                     lambda a: jnp.all(a[0] != -1), loop,
-                    (split, coords, out, bins, 0))
+                    (coords, split, out, 0))[-2:]
+        return jax.lax.cond(
+                full < self.shape[1], lambda out: out.batched(),
+                lambda out: out, out).tree_flatten()
 
 @jax.tree_util.register_pytree_node_class
 class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
@@ -124,8 +150,9 @@ class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
 class Bounds(grouping(
         "Bounds", ("splits", "points", "size"), ("distances", "indices"))):
     def following(self, heap, step, links, data, idx, side):
-        heap.vmap((0, None, 0, 0)).alongside(
-                step, links, self, in_axes=(0, 1, 0)).vet(data, idx, side)
+        return heap.vmap((0, 1, None, None, 0, 0)).alongside(
+                step, self, in_axes=(None, None)).vet(
+                    links.tail, links.head, data, idx, side)
 
 class Candidates:
     # could be built iteratively and stored
