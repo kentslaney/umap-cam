@@ -3,6 +3,19 @@ import jax.numpy as jnp
 from group import grouping, outgroup, marginalized, interface
 from functools import partial
 
+class Chars:
+    BAR = "\u2502"
+    DASH = "\u2500"
+    BAR_DASH = "\u251C"
+    DASH_BAR = "\u252C"
+    ELL = "\u2514"
+    MT = " "
+
+    side = lambda childless: Chars.DASH if childless else Chars.DASH_BAR
+    top = lambda last: Chars.ELL if last else Chars.BAR_DASH
+    space = lambda last: Chars.MT if last else Chars.BAR
+    seq = (top, side, space)
+
 class LazyGetter:
     def __init__(self, f):
         self.f = f
@@ -222,14 +235,53 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         t.root = x
         return t
 
-    def walk(self, value='key', root=None, transform=None):
+    tsv = lambda t, x: "\t".join(map(str, (x, t.key[x], t.secondary[x])))
+    def tsv_table(self, init):
+        res = [i.split("\t") for i in init.split("\n")]
+        res = [(i[0], "", "") if len(i) == 1 else i for i in res]
+        res = [["index", "primary", "secondary"]] + res
+        size = list(map(max, zip(*((len(j) for j in i) for i in res))))
+        return "\n".join((" " * 4).join(
+                getattr(i[j], "ljust" if j == 0 else "center")(size[j])
+                for j in range(len(i))) for i in res)
+
+    def walk(self, value=None, hide=False, root=None, f=None, g=None, alt=None):
+        if hasattr(self.spec, "trees"):
+            return "\n".join(
+                self.indirect[:, i].walk(self.indirect[:, i].tsv, hide, root)
+                for i in range(self.spec.trees))
+        assert self.acyclic()
+        start = value is None and root is None
         root = self.root if root is None else root
-        transform = (lambda x: x) if transform is None else transform
+        f = (lambda x: "\n" + x) if f is None else f
+        g = (lambda x: Chars.DASH_BAR + x) if g is None else g
+        mt = lambda n: n == -1 or self.left[n] == -1 and self.right[n] == -1
         if root == -1:
-            return ""
-        return f"{transform(self[value, root])} " + (
-                self.walk(value, self.left[root], transform) +
-                self.walk(value, self.right[root], transform))
+            return "" if hide or alt == -1 else g(" ")
+
+        _l, _r = l, r = self.left[root], self.right[root]
+        l, r = (r == -1, mt(l), r == -1), (1, mt(r), 1)
+        l, r = (l, r) if hide else ((0, l[1], 0), (1, r[1], 1))
+        l, r = (tuple(f(i) for f, i in zip(Chars.seq, j)) for j in (l, r))
+        fl, gl = lambda x: f(l[2] + x), lambda x: l[0] + l[1] + x
+        fr, gr = lambda x: f(r[2] + x), lambda x: r[0] + r[1] + x
+        h = lambda x: f(x) if x else ""
+
+        node = self.tsv(root) if value is None else \
+                self[value, root] if isinstance(value, str) else value(root)
+        res = f"{g(str(node))}" + (
+                h(self.walk(value, hide, self.left[root], fl, gl, _r)) +
+                h(self.walk(value, hide, self.right[root], fr, gr, _l)))
+        return self.tsv_table(res) if start else res
+
+    def __repr__(self):
+        max_shown = 4
+        if hasattr(self.spec, "trees") and self.spec.trees > max_shown:
+            top = self.indirect[:, :2].walk()
+            mid = f"\n...\n({self.spec.trees - max_shown} more)\n...\n"
+            bottom = self.indirect[:, -2:].walk()
+            return self.tsv_table(top + mid + bottom)
+        return self.tsv_table(self.walk())
 
     def acyclic(self):
         q = jnp.full(self.spec.size, -1).at[0].set(self.root)
@@ -284,6 +336,26 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         self.root = order[-((1 - pop) // 2)]
         return self.at[('left', 'right', 'height'),].set((left, right, height))
 
+    def row(self, i=None, min_space=2, secondaries=False, sep=" "):
+        assert "trees" not in self.spec or i is not None
+        if i is not None:
+            self = self[:, i]
+        res = "" if i is None else f"row: {i}    "
+        min_size = 2 # for null "-1" key
+        size = max(len(str(self.spec.size)), min_size)
+        if secondaries:
+            size = max(size, *(len(str(int(i))) for i in self.secondary))
+        fmt = "{:0" + str(size) + "}"
+        res += "root: " + fmt.format(int(self.root)) + "\n"
+        fmt = " " * (min_space - size) + fmt
+        info = (jnp.arange(self.spec.size), self.left, self.right)
+        res += "\n".join(sep.join(fmt.format(int(i)) for i in j) for j in info)
+        if secondaries:
+            res += "\n" + sep.join(
+                    str(int(i)).rjust(max(min_space, size))
+                    for i in self.secondary)
+        return res
+
 class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
     @jax.jit
     def insert(self, x):
@@ -309,6 +381,9 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
         self = AVLsInterface.batched(self)
         self.max = jnp.argmax(self.key)
         return self
+
+    def __repr__(self):
+        return AVLsInterface.__repr__(self) + "\nwith max = " + repr(self.max)
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(
