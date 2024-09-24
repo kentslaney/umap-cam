@@ -91,25 +91,22 @@ class NNDHeap(
         # args = (self, step, bound, coords, links, data, idx, side)
         # print(*(i.shape for i in args))
         # return
-        def buffer(value, out, full):
-            out = out.at[('key', 'secondary'), full].set(value)
+        def buffer(primary, secondary, out, full):
+            out = out.at[('key', 'secondary'), full].set((primary, secondary))
             return full + 1, jax.lax.cond(
                     full == self.shape[1] - 1, lambda out: out.batched(),
                     lambda out: out, out)
 
-        def replace(value, out, full):
-            pos = out.max
-            out = out.remove(pos)
-            out = out.at[('key', 'secondary'), pos].set(value)
-            out = out.insert(pos)
-            return full, out
+        def replace(primary, secondary, out, full):
+            return full, out#.replace(primary, secondary)
 
         # TODO: recalculate step data for coords, update loop bound, trim out
         def body(args):
             # primary/secondary bounds
             primary, secondary, value, out, full = args
             full, out = jax.lax.cond(
-                    full < self.shape[1], buffer, replace, value, out, full)
+                    full < self.shape[1], buffer, replace,
+                    primary, secondary, out, full)
             # TODO: remove sum
             return primary + 1000, secondary + 1000, value, out, full
         def cond(args):

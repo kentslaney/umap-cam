@@ -154,7 +154,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                     t, root),
                 self, root, balance)
 
-    # @jax.jit
+    @jax.jit
     def insert(self, x):
         def body(i, args):
             path, x, t, y = args
@@ -167,15 +167,10 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             side = jnp.where(balance == 0, 1, t.cmp(
                 x, jnp.where(balance == 1, t.left[root], t.right[root])))
 
-            jax.debug.print("{}", t)
             t = t.pre_balance(balance == side, root, balance)
-            jax.debug.print("{}", t)
-            t, root = t.re_balance(root, balance)
-            jax.debug.print("{} {}", t, root)
-            return (path, y) + (t, root)
+            return (path, y) + t.re_balance(root, balance)
 
         path = self.path(x)
-        jax.debug.print("{}", path)
         _, _, t, x = jax.lax.fori_loop(
                 path.start, path.shape[1], body, (path, x, self, x))
         t.root = x
@@ -235,7 +230,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             t = t.pre_balance(double, root, balance)
             return (path,) + t.re_balance(root, balance)
 
-        t = t.at[('left', 'right'), _x].set((-1, -1))
+        t = t.at[('left', 'right', 'height'), _x].set((-1, -1, 1))
         _, t, x = jax.lax.fori_loop(
                 path.start, path.shape[1], body, (path, t, -1))
         t.root = x
@@ -258,8 +253,9 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             return "\n".join(
                 self.indirect[:, i].walk(self.indirect[:, i].tsv, hide, root)
                 for i in range(self.spec.trees))
-        assert self.acyclic()
         start = value is None and root is None
+        if root is None:
+            assert self.acyclic()
         root = self.root if root is None else root
         f = (lambda x: "\n" + x) if f is None else f
         g = (lambda x: Chars.DASH_BAR + x) if g is None else g
@@ -393,12 +389,16 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
     def __repr__(self):
         return AVLsInterface.__repr__(self) + "\nwith max = " + repr(self.max)
 
-    def push(self, primary, secondary):
-        pos = self.max
-        self.remove(self.max)
-        self = self.at[("key", "secondary"), pos].set((primary, secondary))
-        self = self.insert(pos)
-        return self
+    @partial(jax.jit, static_argnames=("checked",))
+    def replace(self, primary, secondary, checked=True):
+        def body(t):
+            pos = t.max
+            t = t.remove(pos)
+            t = t.at[("key", "secondary"), pos].set((primary, secondary))
+            return t.insert(pos)
+        return jax.lax.cond(
+                self.sign(primary, secondary, self.max) == -1,
+                body, lambda t: t, self) if checked else body(self)
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(
