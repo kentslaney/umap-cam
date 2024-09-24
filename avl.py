@@ -235,11 +235,13 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         t.root = x
         return t
 
-    tsv = lambda t, x: "\t".join(map(str, (x, t.key[x], t.secondary[x])))
+    tsv = lambda t, x: "\t".join(map(str, (
+            x, t.key[x], t.secondary[x], t.height[x])))
     def tsv_table(self, init):
+        names = ["index", "primary", "secondary", "height"]
         res = [i.split("\t") for i in init.split("\n")]
-        res = [(i[0], "", "") if len(i) == 1 else i for i in res]
-        res = [["index", "primary", "secondary"]] + res
+        res = [i + [""] * max(len(names) - len(i), 0) for i in res]
+        res = [names] + res
         size = list(map(max, zip(*((len(j) for j in i) for i in res))))
         return "\n".join((" " * 4).join(
                 getattr(i[j], "ljust" if j == 0 else "center")(size[j])
@@ -331,10 +333,10 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         left = (idx - left) - (idx + 1) * (left == 0)
         right = (idx + right) - (idx + 1) * (right == 0)
         left, right = left | ~filled, right | ~filled
-        # TODO: should be 2 levels of indirection
-        left, right, height = left[order], right[order], height[order]
+        left, right = (jnp.where(i == -1, -1, order[i]) for i in (left, right))
         self.root = order[-((1 - pop) // 2)]
-        return self.at[('left', 'right', 'height'),].set((left, right, height))
+        return self.at[('left', 'right', 'height'), order].set(
+                (left, right, height))
 
     def row(self, i=None, min_space=2, secondaries=False, sep=" "):
         assert "trees" not in self.spec or i is not None

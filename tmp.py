@@ -40,7 +40,9 @@ for i in range(t.shape[1]):
     t = t.at[:, i].batched()
     res = t.indirect[:, i].acyclic()
     idx = i if idx is None and not res else idx
-if idx is not None:
+if idx is None:
+    print(t)
+else:
     print(t.row(idx))
 
 # for i in range(t.spec.trees):
