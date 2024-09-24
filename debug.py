@@ -37,3 +37,8 @@ def set_trace(*, header=None):
 
 sys.breakpointhook = set_trace
 
+def jnp_linewidth():
+    import shutil
+    import jax.numpy as jnp
+    jnp.set_printoptions(linewidth=shutil.get_terminal_size((75, 1))[0])
+

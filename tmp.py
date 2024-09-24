@@ -8,7 +8,7 @@ from importlib import reload
 group = reload(group)
 avl = reload(avl)
 
-from avl import AVLs
+from avl import AVLs, SingularAVL
 
 # https://www.geeksforgeeks.org/introduction-to-avl-tree/
 
@@ -26,24 +26,27 @@ from avl import AVLs
 
 # print(t.indirect[:, 0].search(25, -1))
 
-t = AVLs(2, 32)
-t = t.at['secondary', 0, :15].set(1)
-t = t.at['secondary', 1, :26].set(1)
-t = t.at['secondary', 2:].set(1)
+# t = AVLs(2, 32)
+# t = t.at['secondary', 0, :15].set(1)
+# t = t.at['secondary', 1, :26].set(1)
+# t = t.at['secondary', 2:].set(1)
+
+t = SingularAVL(32)
 
 rng = jax.random.key(0)
-idx = None
-for i in range(t.shape[1]):
-    total = jnp.sum(t['secondary', i] != -1)
+# idx = None
+# for i in range(t.shape[1]):
+subkey, rng = jax.random.split(rng)
+t = t.at['key'].set(jax.random.normal(subkey, (32,)))
+t = t.at['secondary'].set(1)
+t = t.batched()
+print(t.walk())
+
+for i in range(32):
     subkey, rng = jax.random.split(rng)
-    t = t.at['key', i, :total].set(jax.random.normal(subkey, (total,)))
-    t = t.at[:, i].batched()
-    res = t.indirect[:, i].acyclic()
-    idx = i if idx is None and not res else idx
-if idx is None:
-    print(t)
-else:
-    print(t.row(idx))
+    x = jax.random.normal(subkey, ())
+    t = t.replace(x, i + 2)
+print(t.walk())
 
 # for i in range(t.spec.trees):
 #     for j in range(t.spec.size):

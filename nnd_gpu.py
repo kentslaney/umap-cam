@@ -91,25 +91,23 @@ class NNDHeap(
         # args = (self, step, bound, coords, links, data, idx, side)
         # print(*(i.shape for i in args))
         # return
-        def buffer(value, out, full):
-            out = out.at[('key', 'secondary'), full].set(value)
+        def buffer(primary, secondary, out, full):
+            out = out.at[('key', 'secondary'), full].set((primary, secondary))
             return full + 1, jax.lax.cond(
                     full == self.shape[1] - 1, lambda out: out.batched(),
                     lambda out: out, out)
 
-        def replace(value, out, full):
-            pos = out.max
-            out = out.remove(pos)
-            out = out.at[('key', 'secondary'), pos].set(value)
-            out.insert(pos)
-            return full, out
+        def replace(primary, secondary, out, full):
+            jax.debug.print("{} {}", primary, secondary)
+            return full, out#.replace(primary, secondary)
 
         # TODO: recalculate step data for coords, update loop bound, trim out
         def body(args):
             # primary/secondary bounds
             primary, secondary, value, out, full = args
             full, out = jax.lax.cond(
-                    full < self.shape[1], buffer, replace, value, out, full)
+                    full < self.shape[1], buffer, replace,
+                    primary, secondary, out, full)
             # TODO: remove sum
             return primary + 1000, secondary + 1000, value, out, full
         def cond(args):
@@ -136,8 +134,10 @@ class NNDHeap(
                 lambda out: out, out).tree_flatten()
 
 @jax.tree_util.register_pytree_node_class
-class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
-        "Links", ("splits", "points", "size", "addresses"), ("head",))):
+class Links(
+        marginalized("splits", "points", "addresses", tail=jnp.int32(-1)),
+        grouping("Links", ("splits", "points", "size", "addresses"), ("head",))
+        ):
     @jax.jit
     def rebuild(self, step, bound, heap, data):
         order = jnp.tile(jnp.arange(self.shape[2]), (2, 1))
@@ -145,6 +145,74 @@ class Links(marginalized("splits", tail=jnp.int32(-1)), grouping(
         return bound.vmap(in_axes=(0, None, 0, 0)).alongside(
                 heap, step, self, in_axes=None).following(
                     data, order, side)
+
+    def follow(self, tail):
+        # each point sampled a maximum of once per node
+        dense, pos = jnp.full((self.spec.points, 2), -1), 0
+        def body(args):
+            tail, dense, pos = args
+            return self.head[(*tail,)], dense.at[pos].set(tail), pos + 1
+        return jax.lax.while_loop(
+                lambda a: jnp.all(a[0] != -1), body, (tail, dense, pos))[1]
+
+    def walk(self):
+        split, ax = hasattr(self.spec, "splits"), self.spec.index("points")
+        f = self.vmap().follow if split else self.follow
+        return jax.vmap(f, in_axes=ax, out_axes=int(split))(self.tail)
+
+    def show(self, dense, *data, all=False):
+        lens = jnp.sum(jnp.all(dense != -1, axis=-1), axis=-1).T
+        opt = jnp.get_printoptions()
+        linewidth, edgeitems = opt['linewidth'], opt['edgeitems']
+        pad = [
+                "{:0" + str(len(str(getattr(self.spec, i)))) + "}"
+                for i in ['points', 'size']]
+        splits = hasattr(self.spec, "splits")
+        def fmt(coords, last, *data):
+            end = "" if last else " -> "
+            s = [
+                    ("{:.3f}" if jnp.isfinite(i) else "  {}")
+                    if i.dtype == jnp.float32 else pad[0] for i in data]
+            extra = (" " + " ".join(s)).format(*data) if data else ""
+            return f"({pad[0]}, {pad[1]})".format(*coords) + extra + end
+        def wraps(i, row, size, out, line, *data):
+            upcoming = fmt(row[i], i == size - 1, *(
+                    dat[(*row[i],)] for dat in data))
+            if len(line) + len(upcoming) > linewidth:
+                out, line = out + line + "\n", " " * (18 if splits else 12)
+            line += upcoming
+            return out, line
+        def body(i, size, row):
+            out, line = "", str(i).ljust(4) + "  "
+            if splits:
+                _line = line
+                for i in range(self.shape[1]):
+                    line = _line + str(size[i]).ljust(4) + "  " + \
+                            str(i).ljust(4) + "  "
+                    for j in jnp.arange(size[i]):
+                        out, line = wraps(j, row[i], size[i], out, line, *(
+                                k[i] for k in data))
+                    out += line + "\n"
+                out, line = out[:-1], ""
+            else:
+                line += str(size).ljust(4) + "  "
+                for i in jnp.arange(size):
+                    out, line = wraps(i, row, size, out, line, *data)
+            print(out + line)
+        extra, idx = ("side  ", (slice(None),)) if splits else ("", ())
+        jax.debug.print(f"node  size  {extra}candidates", ordered=True)
+        callback = lambda i, a: jax.debug.callback(
+                body, i, lens[i], dense[(*idx, i)], ordered=True)
+        if all or self.spec.points <= 2 * edgeitems:
+            jax.lax.fori_loop(0, self.spec.points, callback, None)
+        else:
+            jax.lax.fori_loop(0, edgeitems, callback, None)
+            multiplier = int(not splits or self.shape[1])
+            hidden = (self.spec.points - 2 * edgeitems) * multiplier
+            jax.debug.print(f"... ({hidden} more) ...")
+            jax.lax.fori_loop(
+                    self.spec.points - edgeitems,
+                    self.spec.points, callback, None)
 
 @jax.tree_util.register_pytree_node_class
 class Bounds(grouping(
@@ -183,10 +251,10 @@ class Candidates:
         @partial(jax.vmap, in_axes=(0, None, None, None, *(None,) * args))
         def el_row(x, y, data, *heap):
             skip = x == -1
-            res = el_el(x, y, data, *heap)
-            out = jnp.where(skip, jnp.float32(jnp.inf)[None], res)
+            out = el_el(x, y, data, *heap)
+            out = jnp.where(skip, jnp.float32(jnp.inf)[None], out)
             lo = jnp.argmin(out)
-            return out[lo], y[lo]
+            return out[lo], jnp.where(jnp.isfinite(out[lo]), y[lo], -1)
         @partial(jax.vmap, in_axes=(None, 0, None, None, *(None,) * args))
         def el_el(x, y, data, aux, *heap):
             d = dist(data[x], data[y])
