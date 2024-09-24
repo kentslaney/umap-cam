@@ -237,7 +237,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         return t
 
     tsv = lambda t, x: "\t".join(map(str, (
-            x, t.key[x], t.secondary[x], t.height[x])))
+            x, f"{t.key[x]:.5f}", t.secondary[x], t.height[x])))
     def tsv_table(self, init):
         names = ["index", "primary", "secondary", "height"]
         res = [i.split("\t") for i in init.split("\n")]
@@ -245,7 +245,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         res = [names] + res
         size = list(map(max, zip(*((len(j) for j in i) for i in res))))
         return "\n".join((" " * 4).join(
-                getattr(i[j], "ljust" if j == 0 else "center")(size[j])
+                getattr(i[j], "ljust" if j == 0 else "rjust")(size[j])
                 for j in range(len(i))) for i in res)
 
     def walk(self, value=None, hide=False, root=None, f=None, g=None, alt=None):
@@ -279,11 +279,11 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         return self.tsv_table(res) if start else res
 
     def __repr__(self):
-        max_shown = 4
-        if hasattr(self.spec, "trees") and self.spec.trees > max_shown:
-            top = self.indirect[:, :2].walk()
-            mid = f"\n...\n({self.spec.trees - max_shown} more)\n...\n"
-            bottom = self.indirect[:, -2:].walk()
+        edgeitems = jnp.get_printoptions()['edgeitems']
+        if hasattr(self.spec, "trees") and self.spec.trees > 2 * edgeitems:
+            top = self.indirect[:, :edgeitems].walk()
+            mid = f"\n...\n({self.spec.trees - 2 * edgeitems} more)\n...\n"
+            bottom = self.indirect[:, -edgeitems:].walk()
             return self.tsv_table(top + mid + bottom)
         return self.tsv_table(self.walk())
 
@@ -387,7 +387,14 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
         return self
 
     def __repr__(self):
-        return AVLsInterface.__repr__(self) + "\nwith max = " + repr(self.max)
+        edgeitems = jnp.get_printoptions()['edgeitems']
+        if self.max.size > 2 * edgeitems:
+            end = "[" + " ".join(map(str, self.max[:edgeitems])) + " ... (" + \
+                    str(self.max.size - 2 * edgeitems) + " more) ... " + \
+                    " ".join(map(str, self.max[-edgeitems:])) + "]"
+        else:
+            end = str(self.max)
+        return AVLsInterface.__repr__(self) + "\nwith max = " + end
 
     @partial(jax.jit, static_argnames=("checked",))
     def replace(self, primary, secondary, checked=True):
