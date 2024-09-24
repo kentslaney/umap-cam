@@ -154,7 +154,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                     t, root),
                 self, root, balance)
 
-    @jax.jit
+    # @jax.jit
     def insert(self, x):
         def body(i, args):
             path, x, t, y = args
@@ -167,10 +167,15 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             side = jnp.where(balance == 0, 1, t.cmp(
                 x, jnp.where(balance == 1, t.left[root], t.right[root])))
 
+            jax.debug.print("{}", t)
             t = t.pre_balance(balance == side, root, balance)
-            return (path, y) + t.re_balance(root, balance)
+            jax.debug.print("{}", t)
+            t, root = t.re_balance(root, balance)
+            jax.debug.print("{} {}", t, root)
+            return (path, y) + (t, root)
 
         path = self.path(x)
+        jax.debug.print("{}", path)
         _, _, t, x = jax.lax.fori_loop(
                 path.start, path.shape[1], body, (path, x, self, x))
         t.root = x
@@ -200,7 +205,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             path.height += 1
             path = path.at[:, path.start].set((node, -1))
             return t.left[node], path, t
-        path = self.path(x)
+        path, _x = self.path(x), x
         # checkify.check(path[path.start] == 0, "node not found")
         parent = path.start + 1
         path, t, x = jax.lax.cond(
@@ -230,6 +235,7 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             t = t.pre_balance(double, root, balance)
             return (path,) + t.re_balance(root, balance)
 
+        t = t.at[('left', 'right'), _x].set((-1, -1))
         _, t, x = jax.lax.fori_loop(
                 path.start, path.shape[1], body, (path, t, -1))
         t.root = x
@@ -381,11 +387,18 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
 
     def batched(self):
         self = AVLsInterface.batched(self)
-        self.max = jnp.argmax(self.key)
+        self.max = jnp.nanargmax(self.key)
         return self
 
     def __repr__(self):
         return AVLsInterface.__repr__(self) + "\nwith max = " + repr(self.max)
+
+    def push(self, primary, secondary):
+        pos = self.max
+        self.remove(self.max)
+        self = self.at[("key", "secondary"), pos].set((primary, secondary))
+        self = self.insert(pos)
+        return self
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(

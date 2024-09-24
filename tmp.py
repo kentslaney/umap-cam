@@ -44,6 +44,7 @@ if idx is None:
     print(t)
 else:
     print(t.row(idx))
+t.indirect[:, 1].push(1.1, 1)
 
 # for i in range(t.spec.trees):
 #     for j in range(t.spec.size):

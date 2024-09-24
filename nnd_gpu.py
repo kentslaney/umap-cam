@@ -101,7 +101,7 @@ class NNDHeap(
             pos = out.max
             out = out.remove(pos)
             out = out.at[('key', 'secondary'), pos].set(value)
-            out.insert(pos)
+            out = out.insert(pos)
             return full, out
 
         # TODO: recalculate step data for coords, update loop bound, trim out
