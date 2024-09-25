@@ -42,3 +42,21 @@ def jnp_linewidth():
     import jax.numpy as jnp
     jnp.set_printoptions(linewidth=shutil.get_terminal_size((75, 1))[0])
 
+def jax_debug_silence():
+    import os
+    os.environ["JAX_DEBUG_SILENCE"] = "1"
+
+def jax_print(*args):
+    import os
+    if int(os.environ.get("JAX_DEBUG_SILENCE", 0)):
+        return
+    import jax
+    jax.debug.print("{} " * len(args), *args)
+
+def jax_cond_print(cond, *args):
+    import os
+    if int(os.environ.get("JAX_DEBUG_SILENCE", 0)):
+        return
+    import jax
+    jax.lax.cond(cond, jax_print, lambda *a: None, *args)
+

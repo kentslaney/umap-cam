@@ -258,8 +258,8 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             assert self.acyclic()
         root = self.root if root is None else root
         f = (lambda x: "\n" + x) if f is None else f
-        g = (lambda x: Chars.DASH_BAR + x) if g is None else g
         mt = lambda n: n == -1 or self.left[n] == -1 and self.right[n] == -1
+        g = (lambda x: Chars.side(mt(self.root)) + x) if g is None else g
         if root == -1:
             return "" if hide or alt == -1 else g(" ")
 
@@ -405,30 +405,35 @@ class MaxAVL(
         self = self.at[("key", "secondary"), pos].set((primary, secondary))
         return self.insert(pos)
 
+    def includable(self, primary, secondary):
+        return (
+                ((self.full < self.spec.size) | (
+                    self.sign(primary, secondary, self.max) == -1)) &
+                (secondary != -1) & ~self.contains(primary, secondary))
+
     @partial(jax.jit, static_argnames=("checked",))
     def push(self, primary, secondary, checked=True):
         def add(t, primary, secondary):
             t = t.at[("key", "secondary"), t.full].set((primary, secondary))
+            t = t.insert(t.full)
             t.full += 1
-            t = jax.lax.cond(
-                    t.full == t.spec.size, lambda: t.batched(), lambda: t)
             return t
         def body(t):
             return jax.lax.cond(
                     t.full < t.spec.size, add, t.__class__.replace,
                     t, primary, secondary)
         return jax.lax.cond(
-                ((self.full < self.spec.size) | (self.sign(
-                    primary, secondary, self.max) == -1)) & (secondary != -1),
+                self.includable(primary, secondary),
                 body, lambda t: t, self) if checked else body(self)
 
-    def resolve(self):
+    @property
+    def key_max(self):
         if hasattr(self.spec, "trees"):
-            return self.remap().resolve()
+            return jnp.stack([self['key', *i] for i in jnp.stack(
+                (jnp.arange(self.spec.points), self.max), -1)])
         else:
-            return jax.lax.cond(
-                    (self.full < self.spec.size) & (self.full > 0),
-                    lambda: self.batched(), lambda: self)
+            return self.key[self.max]
+
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(

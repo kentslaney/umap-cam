@@ -14,9 +14,9 @@ from nnd_gpu import NNDHeap as NNDHeapGPU
 
 def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     rng = jax.random.key(0) if rng is None else rng
-    if data is None:
+    if data is None or isinstance(data, int):
         rng, subkey = jax.random.split(rng)
-        data = jax.random.normal(subkey, (512, 8))
+        data = jax.random.normal(subkey, (512 if data is None else data, 8))
     heap = NNDHeap(data.shape[0], k)
     heap, rng = heap.randomize(data, rng)
     if n_trees != 0:
@@ -53,20 +53,26 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     data, heap = test_cached(data, k, rng, max_candidates, n_trees)
     rng = jax.random.key(0)
     rng, subkey = jax.random.split(rng)
-    heap = heap.at['flags'].set(jax.random.bernoulli(subkey, shape=(512, 16)))
+    heap = heap.at['flags'].set(jax.random.bernoulli(subkey, shape=(
+            heap.shape[1], heap.shape[2])))
     return (heap, data) + heap.build(max_candidates, rng)
 
 from debug import jnp_linewidth; jnp_linewidth()
-heap, data, update, step, rng = test()
+
+# from debug import jax_debug_silence; jax_debug_silence()
+
+heap, data, update, step, rng = test(32)
 # data, heap = test_cached()
 heap = heap.remap().batched()
 links = step.links()
 bounds = step.bounds(data, heap)
 
 # links.indirect[:, 0].show(links.indirect[:, 0].walk(), *bounds[:, 0], step[0])
-# links.show(links.walk(), *bounds)
+links.show(links.walk(), *bounds, threshold=heap.key_max)
+print(heap)
 
 # jax.config.update("jax_disable_jit", True)
-vetted = links.rebuild(step, bounds, heap, data)
-print(vetted)
+filtered = links.rebuild(step, bounds, heap, data)
+print(filtered)
+# print(vetted.tsv_table(vetted.walk()))
 # print(heap)

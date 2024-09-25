@@ -165,7 +165,18 @@ class Group:
     def outslice(self, idx, value=None):
         return ()
 
+    def dict_dim(self, idx):
+        assert isinstance(idx, dict)
+        mapping = {k: self.spec.index(k) for k, v in idx.items()}
+        assert len(mapping.values()) == len(set(mapping.values()))
+        mapping = {mapping[k] + 1: v for k, v in idx.items()}
+        return tuple(
+                mapping.get(i, slice(None))
+                for i in range(max(mapping.keys()) + 1))
+
     def __getitem__(self, idx):
+        if isinstance(idx, dict):
+            idx = self.dict_dim(idx)
         if not isinstance(idx, tuple):
             idx = (idx,)
         idx, sel, fields = self.subgroup(idx)
