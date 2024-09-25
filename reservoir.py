@@ -3,14 +3,14 @@ import jax.numpy as jnp
 import sys, pathlib
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[0]))
-import nnd, rpt, group, nnd_gpu, avl
+import nnd, rpt, group, nnd_avl, avl
 from importlib import reload
 group = reload(group)
 nnd, rpt = reload(nnd), reload(rpt)
-avl, nnd_gpu = reload(avl), reload(nnd_gpu)
+avl, nnd_avl = reload(avl), reload(nnd_avl)
 
 from nnd import RPCandidates, NNDHeap
-from nnd_gpu import NNDHeap as NNDHeapGPU
+from nnd_avl import NNDHeap as NNDHeapAVL
 
 def test_setup(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     rng = jax.random.key(0) if rng is None else rng
@@ -44,8 +44,8 @@ def test_cached(
     if not full.is_file():
         data, heap, _ = test_setup(*params)
         jnp.savez(full, data, heap, params)
-    form = NNDHeapGPU(*heap.shape[1:])
-    heap = NNDHeapGPU.tree_unflatten(
+    form = NNDHeapAVL(*heap.shape[1:])
+    heap = NNDHeapAVL.tree_unflatten(
             (), tuple(heap) + form.tree_flatten()[0][len(heap):])
     return data, heap
 

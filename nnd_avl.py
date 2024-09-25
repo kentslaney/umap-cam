@@ -87,6 +87,7 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
+# TODO: remove
 # from debug import jax_print, jax_cond_print
 
 @jax.tree_util.register_pytree_node_class
@@ -103,6 +104,7 @@ class Filtered(groupaux(dist=euclidean), AVLs):
 
     # TODO: track heap's decreasing maximum as elements are substituted
     def filter(self, heap, step, bound, coords, links, data, side):
+        # TODO: remove
         debug_idx = jnp.stack(step)[(side, *coords)]
         def recalculate(coords, out):
             pairs = out.pairs(coords, step, data, side)
