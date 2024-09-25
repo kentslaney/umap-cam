@@ -57,15 +57,16 @@ def test(data=None, k=16, rng=None, max_candidates=16, n_trees=1):
     return (heap, data) + heap.build(max_candidates, rng)
 
 from debug import jnp_linewidth; jnp_linewidth()
-# jax.config.update("jax_disable_jit", True)
-
 heap, data, update, step, rng = test()
 # data, heap = test_cached()
 heap = heap.remap().batched()
 links = step.links()
-bounds = step.bounds(data, heap, True)
+bounds = step.bounds(data, heap)
+
 # links.indirect[:, 0].show(links.indirect[:, 0].walk(), *bounds[:, 0], step[0])
-links.show(links.walk(), *bounds)
-exit(0)
-print(links.rebuild(step, bounds, heap, data))
+# links.show(links.walk(), *bounds)
+
+# jax.config.update("jax_disable_jit", True)
+vetted = links.rebuild(step, bounds, heap, data)
+print(vetted)
 # print(heap)

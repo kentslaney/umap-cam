@@ -26,27 +26,29 @@ from avl import AVLs, SingularAVL
 
 # print(t.indirect[:, 0].search(25, -1))
 
-# t = AVLs(2, 32)
+t = AVLs(3, 32)
 # t = t.at['secondary', 0, :15].set(1)
 # t = t.at['secondary', 1, :26].set(1)
 # t = t.at['secondary', 2:].set(1)
 
-t = SingularAVL(32)
+# t = SingularAVL(32)
 
 rng = jax.random.key(0)
 # idx = None
 # for i in range(t.shape[1]):
-subkey, rng = jax.random.split(rng)
-t = t.at['key'].set(jax.random.normal(subkey, (32,)))
-t = t.at['secondary'].set(1)
-t = t.batched()
-print(t.walk())
+# subkey, rng = jax.random.split(rng)
+# t = t.at['key'].set(jax.random.normal(subkey, (32,)))
+# t = t.at['secondary'].set(1)
+# t = t.batched()
+# print(t.walk())
 
-for i in range(32):
-    subkey, rng = jax.random.split(rng)
-    x = jax.random.normal(subkey, ())
-    t = t.replace(x, i + 2)
-print(t.walk())
+for i, n in enumerate((26, 38)):
+    for j in range(n):
+        subkey, rng = jax.random.split(rng)
+        x = jax.random.normal(subkey, ())
+        t = t.at[:, i].push(x, j + 2)
+t = t.resolve()
+print(t)
 
 # for i in range(t.spec.trees):
 #     for j in range(t.spec.size):

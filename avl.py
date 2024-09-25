@@ -336,9 +336,10 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         right = (idx + right) - (idx + 1) * (right == 0)
         left, right = left | ~filled, right | ~filled
         left, right = (jnp.where(i == -1, -1, order[i]) for i in (left, right))
-        self.root = order[-((1 - pop) // 2)]
-        return self.at[('left', 'right', 'height'), order].set(
+        self = self.at[('left', 'right', 'height'), order].set(
                 (left, right, height))
+        self.root = order[-((1 - pop) // 2)]
+        return self
 
     def row(self, i=None, min_space=2, secondaries=False, sep=" "):
         assert "trees" not in self.spec or i is not None
@@ -360,7 +361,9 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                     for i in self.secondary)
         return res
 
-class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
+class MaxAVL(
+        marginalized("trees", max=jnp.int32(-1), full=jnp.int32(0)),
+        AVLsInterface):
     @jax.jit
     def insert(self, x):
         self = AVLsInterface.insert(self, x)
@@ -396,16 +399,36 @@ class MaxAVL(marginalized("trees", max=jnp.int32(-1)), AVLsInterface):
             end = str(self.max)
         return AVLsInterface.__repr__(self) + "\nwith max = " + end
 
+    def replace(self, primary, secondary):
+        pos = self.max
+        self = self.remove(pos)
+        self = self.at[("key", "secondary"), pos].set((primary, secondary))
+        return self.insert(pos)
+
     @partial(jax.jit, static_argnames=("checked",))
-    def replace(self, primary, secondary, checked=True):
+    def push(self, primary, secondary, checked=True):
+        def add(t, primary, secondary):
+            t = t.at[("key", "secondary"), t.full].set((primary, secondary))
+            t.full += 1
+            t = jax.lax.cond(
+                    t.full == t.spec.size, lambda: t.batched(), lambda: t)
+            return t
         def body(t):
-            pos = t.max
-            t = t.remove(pos)
-            t = t.at[("key", "secondary"), pos].set((primary, secondary))
-            return t.insert(pos)
+            return jax.lax.cond(
+                    t.full < t.spec.size, add, t.__class__.replace,
+                    t, primary, secondary)
         return jax.lax.cond(
-                self.sign(primary, secondary, self.max) == -1,
+                ((self.full < self.spec.size) | (self.sign(
+                    primary, secondary, self.max) == -1)) & (secondary != -1),
                 body, lambda t: t, self) if checked else body(self)
+
+    def resolve(self):
+        if hasattr(self.spec, "trees"):
+            return self.remap().resolve()
+        else:
+            return jax.lax.cond(
+                    (self.full < self.spec.size) & (self.full > 0),
+                    lambda: self.batched(), lambda: self)
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(

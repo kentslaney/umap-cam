@@ -53,14 +53,16 @@ class GroupMap:
     def __init__(self, group, remap, in_axes=0, *a, **kw):
         self.group, self.remap = group, remap
         self.in_axes, self.a, self.kw = in_axes, a, kw
-        self.sliced, self.flat, self.side_axes = ((),) * 3
+        self.sliced, self.flat, self.side_axes, self.aux_data = ((),) * 4
 
     def alongside(self, *a, in_axes=0):
         in_axes = (in_axes,) * len(a) if isinstance(
                 in_axes, int) or in_axes is None else in_axes
-        sliced, flat, in_axes = zip(*(self._axis(*i) for i in zip(in_axes, a)))
+        sliced, flat, aux, in_axes = zip(*(
+                self._axis(*i) for i in zip(in_axes, a)))
         self.flat, self.sliced = self.flat + flat, self.sliced + sliced
         self.side_axes += sum(in_axes, ())
+        self.aux_data += aux
         return self
 
     def __getattr__(self, key):
@@ -79,9 +81,9 @@ class GroupMap:
             sliced = group.indirect[sliced].__class__
         children, aux = group.tree_flatten()
 
-        _in_axes = (None, *_in_axes[:1] * len(children)) + _in_axes[1:]
+        _in_axes = _in_axes[:1] * len(children) + _in_axes[1:]
         _in_axes += (in_axes,) * (len(a) if isinstance(in_axes, int) else 0)
-        return sliced, (aux, *children), _in_axes
+        return sliced, children, aux, _in_axes
 
     def _unflatten(self, a):
         sizes, bounds, total = map(len, ((),) + self.flat), [], 0
@@ -89,25 +91,26 @@ class GroupMap:
             total += i
             bounds.append(total)
         return tuple(
-                sliced.tree_unflatten(a[begin], a[begin + 1:end])
-                for sliced, begin, end in zip(
-                    self.sliced, bounds[:-1], bounds[1:]))
+                sliced.tree_unflatten(aux, a[begin:end])
+                for sliced, aux, begin, end in zip(
+                    self.sliced, self.aux_data, bounds[:-1], bounds[1:]))
 
     def _map(self, key, a):
-        sliced, flat, in_axes = self._axis(self.in_axes, self.group, *a)
+        sliced, flat, aux, in_axes = self._axis(self.in_axes, self.group, *a)
         in_axes = in_axes[:len(flat)] + self.side_axes + in_axes[len(flat):]
-        _flat = flat + sum(self.flat, ())
-        def g(aux, *a):
-            subset = (sliced.tree_unflatten(flat[0], a[:len(flat) - 1]),)
-            subset += self._unflatten(a[len(flat) - 1:len(_flat) - 1])
-            res = getattr(sliced, key)(*subset, *a[len(_flat) - 1:])
+        _flat, aux_out = flat + sum(self.flat, ()), ()
+        def g(*a):
+            nonlocal aux_out
+            subset = (sliced.tree_unflatten(aux, a[:len(flat)]),)
+            subset += self._unflatten(a[len(flat):len(_flat)])
+            res = getattr(sliced, key)(*subset, *a[len(_flat):])
             if self.remap:
-                res = sliced.tree_flatten(res)
-                return (res[1], *res[0])
+                res, aux_out = sliced.tree_flatten(res)
+                return res
             return res
         res = jax.vmap(g, in_axes, *self.a, **self.kw)(*_flat, *a)
         if self.remap:
-            return self.group.tree_unflatten(res[0], res[1:len(flat)],)
+            return self.group.tree_unflatten(aux_out, res)
         return res
 
 class Group:
