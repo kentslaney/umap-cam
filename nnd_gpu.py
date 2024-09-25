@@ -247,21 +247,21 @@ class Candidates:
         args = len(children)
         @partial(jax.vmap, in_axes=(0, 0, None, None, *(0,) * args))
         def row_row(x, y, data, *heap):
-            return el_row(x, y, data, *heap)
-        @partial(jax.vmap, in_axes=(0, None, None, None, *(None,) * args))
-        def el_row(x, y, data, *heap):
-            skip = x == -1
+            return row_el(x, y, data, *heap)
+        @partial(jax.vmap, in_axes=(None, 0, None, None, *(None,) * args))
+        def row_el(x, y, data, *heap):
+            skip = y == -1
             out = el_el(x, y, data, *heap)
             out = jnp.where(skip, jnp.float32(jnp.inf)[None], out)
             lo = jnp.argmin(out)
-            return out[lo], jnp.where(jnp.isfinite(out[lo]), y[lo], -1)
-        @partial(jax.vmap, in_axes=(None, 0, None, None, *(None,) * args))
+            return out[lo], jnp.where(jnp.isfinite(out[lo]), x[lo], -1)
+        @partial(jax.vmap, in_axes=(0, None, None, None, *(None,) * args))
         def el_el(x, y, data, aux, *heap):
             d = dist(data[x], data[y])
             heap = tree.tree_unflatten(aux, heap)
-            skip = (x == y) | (y == -1)
+            skip = (x == y) | (x == -1)
             if prune:
-                skip |= heap.contains(d, y)
+                skip |= heap.contains(d, x)
             return jnp.where(skip, jnp.inf, d)
         return row_row(self[idx0], self[idx1], data, heap.aux_data, *children)
 
