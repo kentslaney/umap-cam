@@ -225,8 +225,12 @@ class BaseOptimizer:
         phi = jnp.where(phi < 1, phi, 0)
         return self.gamma * jnp.log(1 - phi)
 
-    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
+    def step(self, i, n, rng, head_embedding, tail_embedding, adj):
         raise NotImplementedError
+
+    iterator = Adjacencies
+    def epoch(self, f, *args):
+        return f(self.step, *args)
 
     @jax.jit
     def optimize(self, rng, embedding, adj):
@@ -238,8 +242,10 @@ class BaseOptimizer:
         def loop(n, a):
             if self.verbose:
                 jax.debug.callback(update, n)
-            return adj.filtered(
-                lambda x: cond(x, n), lambda i, *a: self.epoch(i, n, *a), *a)
+            f = partial(self.iterator.filtered, adj, lambda x: cond(x, n))
+            wrapper = lambda g, *a, **kw: f(
+                    lambda i, n, *a: g(i, n, *a), *a, **kw)
+            return self.epoch(wrapper, n, *a)
         return jax.lax.fori_loop(0, adj.n_epochs, loop, (rng, *args, adj))[:-1]
 
 @jax.tree_util.register_pytree_node_class
@@ -248,24 +254,23 @@ class Optimizer(BaseOptimizer):
     def clip(grad):
         return jnp.clip(grad, -0.04 * scale ** 2, 0.04 * scale ** 2)
 
-    def negative_sample(self, loss, rng, current, tail_embedding):
+    def negative_sample(self, rng, current, tail_embedding):
         rng, subkey = jax.random.split(rng)
         k = jax.random.randint(subkey, (), 0, tail_embedding.shape[0])
         other = tail_embedding[k]
-        loss += self.negative_loss(current, other)
-        return loss, rng, current, tail_embedding
+        return self.negative_loss(current, other)
 
     def sample(self, head_embedding, tail_embedding, rng, j, k):
         current, other = head_embedding[j], tail_embedding[k]
-        positive = self.positive_loss(current, other)
-        loss, rng, *_ = jax.lax.fori_loop(
-                0, self.negative_sample_rate,
-                lambda p, a: self.negative_sample(*a),
-                (positive, rng, current, jax.lax.stop_gradient(tail_embedding)))
+        loss = self.positive_loss(current, other)
+        rng, *subkeys = jax.random.split(rng, self.negative_sample_rate + 1)
+        loss += jnp.sum(jax.vmap(
+                lambda rng: self.negative_sample(
+                    rng, current, jax.lax.stop_gradient(tail_embedding)),
+                )(jnp.stack(subkeys)))
         return loss, rng
 
-    # TODO: accumulate over epoch
-    def epoch(self, i, n, rng, head_embedding, tail_embedding, adj):
+    def step(self, i, n, rng, head_embedding, tail_embedding, adj):
         alpha = 1 - n / adj.n_epochs
         grad, rng = jax.grad(self.sample, (0, 1), True)(
                 head_embedding, tail_embedding, rng, adj.head[i], adj.tail[i])
@@ -274,6 +279,33 @@ class Optimizer(BaseOptimizer):
         if self.move_other:
             tail_embedding += negative * alpha
         return rng, head_embedding, tail_embedding, adj
+
+class CommutativeAdjacencies(Adjacencies):
+    def filtered(self, cond, callback, *args, mt=None):
+        return jax.vmap(lambda i, j: jax.lax.cond(
+                cond(j), callback, lambda i, *a: a if mt is None else mt,
+                i, *args))(jnp.arange(self.shape[1]), self.weight)
+
+@jax.tree_util.register_pytree_node_class
+class AccumulatingOptimizer(Optimizer):
+    iterator = CommutativeAdjacencies
+    def epoch(self, f, n, rng, head, tail, adj):
+        rng, *subkeys = jax.random.split(rng, adj.shape[1] + 1)
+        subkeys = jnp.stack(subkeys)
+        rng_wrapper = lambda i, n, *a: self.step(i, n, subkeys[i], *a)
+        delta_head, delta_tail = map(partial(jnp.sum, axis=0), f(
+                rng_wrapper, n, head, tail, adj,
+                mt=tuple(jnp.zeros((2, *head.shape)))))
+        return rng, head + delta_head, tail + delta_tail, adj
+
+    def step(self, i, n, rng, head_embedding, tail_embedding, adj):
+        alpha = 1 - n / adj.n_epochs
+        grad, rng = jax.grad(self.sample, (0, 1), True)(
+                head_embedding, tail_embedding, rng, adj.head[i], adj.tail[i])
+        positive, negative = map(self.clip, grad)
+        head = positive * alpha
+        tail = negative * alpha if self.move_other else jnp.zeros_like(head)
+        return head, tail
 
 # TODO: constrained optimization solution just needs the shape to be right
 #   ... scale bounds to domain and apply gradient to (soft-)boundary points
@@ -301,7 +333,7 @@ if __name__ == "__main__":
     from nnd import npy_cache
     data, heap = npy_cache("test_step", neighbors=14)
     rng, embed, adj = initialize(jax.random.key(0), data, heap, 2)
-    rng, lo, hi = Optimizer().optimize(rng, embed, adj)
+    rng, lo, hi = AccumulatingOptimizer().optimize(rng, embed, adj)
     # print(lo)
     # exit(0)
 
