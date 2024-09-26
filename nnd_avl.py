@@ -87,6 +87,20 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
+    def apply(self, update):
+        def body(heap, primary, secondary):
+            return heap.push(primary, secondary)
+        def cond(heap, update):
+            return jax.lax.cond(
+                    update[1] != -1, body, lambda *a: heap, heap, *update), None
+        return jax.lax.scan(cond, self, tuple(update[('key', 'secondary'),]))[0]
+
+    def update(self, data, candidates, dist=euclidean):
+        bounds = candidates.bounds(data, self)
+        links = candidates.links()
+        filtered = links.rebuild(candidates, bounds, self, data, dist)
+        return self.remap('points').alongside(filtered, in_axes='trees').apply()
+
 @jax.tree_util.register_pytree_node_class
 class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
     @partial(jax.jit)

@@ -78,7 +78,7 @@ class GroupMap:
 
     def alongside(self, *a, in_axes=0):
         in_axes = (in_axes,) * len(a) if isinstance(
-                in_axes, int) or in_axes is None else in_axes
+                in_axes, (int, str)) or in_axes is None else in_axes
         sliced, flat, aux, in_axes = zip(*(
                 self._axis(*i) for i in zip(in_axes, a)))
         self.flat, self.sliced = self.flat + flat, self.sliced + sliced
@@ -91,9 +91,11 @@ class GroupMap:
         return lambda *a: self._map(key, a)
 
     def _axis(self, in_axes, group, *a):
-        _in_axes = (in_axes,) if isinstance(in_axes, int) else in_axes
+        _in_axes = (in_axes,) if isinstance(in_axes, (int, str)) else in_axes
         _in_axes = (None,) if _in_axes is None else _in_axes
-        _in_axes = (group.ref(_in_axes[0]),) + tuple(_in_axes[1:])
+        _in_axes = (
+                group.spec.index(_in_axes[0]) if isinstance(_in_axes[0], str)
+                else _in_axes[0],) + tuple(_in_axes[1:])
 
         if _in_axes[0] is None:
             sliced = group.__class__
@@ -103,7 +105,8 @@ class GroupMap:
         children, aux = group.tree_flatten()
 
         _in_axes = _in_axes[:1] * len(children) + _in_axes[1:]
-        _in_axes += (in_axes,) * (len(a) if isinstance(in_axes, int) else 0)
+        _in_axes += (in_axes,) * (
+                len(a) if isinstance(in_axes, (int, str)) else 0)
         return sliced, children, aux, _in_axes
 
     def _unflatten(self, a):
@@ -301,6 +304,9 @@ def dim_alias(**kw):
 
         def __getattr__(self, key):
             return getattr(self.ln, self.kw.get(key, key))
+
+        def __iter__(self):
+            return iter(self.ln)
 
         def index(self, key):
             return self.ln.index(self.kw.get(key, key))
