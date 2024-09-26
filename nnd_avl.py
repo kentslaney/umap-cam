@@ -2,7 +2,7 @@ from functools import partial
 import jax
 import jax.numpy as jnp
 from group import grouping, group_alias, dim_alias, marginalized, groupaux
-from avl import MaxAVL, AVLs
+from avl import MaxAVL, AVLs, Predecessors
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
@@ -87,11 +87,8 @@ class NNDHeap(
         res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
         return self.tree_unflatten((), res), rng[0]
 
-# TODO: remove
-# from debug import jax_print, jax_cond_print
-
 @jax.tree_util.register_pytree_node_class
-class Filtered(groupaux(dist=euclidean), AVLs):
+class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
     @partial(jax.jit)
     def pairs(self, coords, step, data, side):
         def body(el, ref):
@@ -102,29 +99,44 @@ class Filtered(groupaux(dist=euclidean), AVLs):
         indices = jnp.where(jnp.isfinite(distances), step[0, row], -1)
         return jax.lax.sort((distances, indices), num_keys=2)
 
-    # TODO: track heap's decreasing maximum as elements are substituted
     def filter(self, heap, step, bound, coords, links, data, side):
-        # TODO: remove
-        debug_idx = jnp.stack(step)[(side, *coords)]
-        def recalculate(coords, out):
+        def push(out, ceil, *value):
+            sign = out.sign(*value, out.max)
+            over = heap.spec.size <= out.full + heap.full
+            full = out.full >= out.spec.size
+            update = (~full & over & (sign == 1))
+            replace = full & (sign == -1)
+            return jax.lax.cond(
+                    replace, lambda ceil: (jax.lax.cond(
+                        full, lambda: out.replace(*value), lambda: out), ceil),
+                    lambda ceil: jax.lax.cond(
+                        (sign == -1) | (heap.sign(*value, ceil.value) == -1),
+                        lambda: (out.push(*value), ceil), lambda: (out, ceil)),
+                    jax.lax.cond(update, lambda: ceil.next(), lambda: ceil))
+
+        @jax.jit
+        def recalculate(coords, out, ceil):
             pairs = out.pairs(coords, step, data, side)
             valid = jax.vmap(lambda *a: heap.sign(*a, heap.max))(*pairs)
             valid = (valid == -1) & (pairs[1] != -1)
             fit = jnp.sum(valid)
             valid = ~jax.vmap(heap.contains)(*pairs)
-            return jax.lax.fori_loop(0, fit, lambda i, out: jax.lax.cond(
-                        valid[i], lambda: out.push(pairs[0][i], pairs[1][i]),
-                        lambda: out), out)
+            return jax.lax.fori_loop(0, fit, lambda i, args: (*jax.lax.cond(
+                    valid[i], lambda: push(*args[:2], args[2][i], args[3][i]),
+                    lambda: args[:2]), *args[2:]), (out, ceil, *pairs))[:2]
 
         def body(args):
-            coords, out = args
+            coords, out, ceil = args
             lo = bound[(slice(None), *coords)]
-            out = jax.lax.cond(
+            out, ceil = jax.lax.cond(
                     (heap.sign(*lo, heap.max) == -1) & out.includable(*lo),
-                    recalculate, lambda _, out: out, *args)
-            return links[(*coords,)], out
-        return jax.lax.while_loop(
-                lambda a: jnp.all(a[0] != -1), body, (coords, self))[1]
+                    recalculate, lambda *a: a[1:], *args)
+            return links[(*coords,)], out, ceil
+        ceil = Predecessors(heap, self.ceil)
+        _, out, ceil = jax.lax.while_loop(
+                lambda a: jnp.all(a[0] != -1), body, (coords, self, ceil))
+        out.ceil = ceil.value
+        return out
 
     def __repr__(self):
         return AVLs.__repr__(self) + "\nand dist = " + repr(self.dist)
@@ -241,7 +253,7 @@ class Bounds(grouping(
         bounds = self.tree_unflatten(*bounds.tree_flatten()[::-1])
         out, heap, step, data = carry
         out = out.remap((0, 0, None, None, None)).alongside(
-                heap, step, bounds, in_axes=(0, None, None, None)).filter(
+                heap, step, bounds, in_axes=(0, None, None)).filter(
                     links.tail, links.head, data, side)
         return (out, heap, step, data), None
 

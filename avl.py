@@ -387,6 +387,7 @@ class MaxAVL(
     def batched(self):
         self = AVLsInterface.batched(self)
         self.max = jnp.nanargmax(self.key)
+        self.full = self.spec.size - jnp.sum(self.secondary == -1)
         return self
 
     def __repr__(self):
@@ -399,6 +400,7 @@ class MaxAVL(
             end = str(self.max)
         return AVLsInterface.__repr__(self) + "\nwith max = " + end
 
+    @jax.jit
     def replace(self, primary, secondary):
         pos = self.max
         self = self.remove(pos)
@@ -434,6 +436,58 @@ class MaxAVL(
         else:
             return self.key[self.max]
 
+@jax.tree_util.register_pytree_node_class
+class Predecessors:
+    def __init__(self, parent, node=-1, path=None):
+        self.parent = parent
+        node = jnp.where(node == -1, parent.max, node)
+        self.path = parent.path(node) if path is None else path
+
+    @jax.jit
+    def next(self):
+        def hasnt_left(level):
+            return (
+                    (level < self.path.spec.size) &
+                    (self.path.sign[level] != 1) &
+                    ~((self.path.sign[level] == 0) & (
+                        self.parent.left[self.path.path[level]] != -1)))
+        level = jax.lax.while_loop(
+                hasnt_left, lambda level: level + 1, self.path.start)
+        # if level is 0 stop; else set child to 1 or else 0
+        def step(step=1):
+            assert step in (-1, 1)
+            dir = 'right' if step == 1 else 'left'
+            def f(args):
+                level, path = args
+                node = getattr(self.parent, dir)[path.path[level]]
+                return jax.lax.cond(
+                        node == -1,
+                        lambda: (level, path.at['sign', level].set(0)),
+                        lambda: (
+                            level - 1, path.at[:, level - 1].set((node, 1))))
+            return f
+        mov = lambda a: (a[0] >= 0) & (a[1].sign[a[0]] != 0)
+        def down():
+            nonlocal level
+            path = self.path.at['sign', level].add(-1)
+            level, path = jax.lax.cond(
+                    mov((level, path)), step(-1), lambda a: (level, path),
+                    (level, path))
+            level, path = jax.lax.while_loop(mov, step(), (level, path))
+            path.height = path.spec.size - level
+            return __class__(self.parent, path=path)
+        return jax.lax.cond(level >= self.path.spec.size, lambda: self, down)
+
+    @property
+    def value(self):
+        return self.path.path[self.path.start]
+
+    def tree_flatten(self):
+        return (self.parent, self.path), ()
+
+    @classmethod
+    def tree_unflatten(cls, aux_data, children):
+        return cls(children[0], path=children[1])
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(

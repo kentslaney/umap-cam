@@ -9,6 +9,27 @@ class GroupSetter:
     def set(self, value):
         return self.group.setter(self.idx, value)
 
+    def get(self):
+        return self.group[self.idx]
+
+    def add(self, value):
+        return self.group.setter(self.idx, self.get() + value)
+
+    def multiply(self, value):
+        return self.group.setter(self.idx, self.get() * value)
+
+    def divide(self, value):
+        return self.group.setter(self.idx, self.get() / value)
+
+    def power(self, value):
+        return self.group.setter(self.idx, self.get() ** value)
+
+    def min(self, value):
+        return self.group.setter(self.idx, jnp.minimum(self.get(), value))
+
+    def max(self, value):
+        return self.group.setter(self.idx, jnp.maximum(self.get(), value))
+
     def __getattr__(self, key):
         f = getattr(self.group.indirect[self.idx], key)
         assert callable(f)
@@ -31,7 +52,7 @@ class GroupIndirect:
                 def tree_unflatten(cls,  *a, **kw):
                     return super().tree_unflatten(*a, **kw)
 
-            hashable = (wrapper, sliced.spec._names, sliced._names)
+            hashable = (wrapper, *self.group.subgroup(idx)[1:])
             if hashable in registered:
                 Wrapping = registered[hashable]
             else:

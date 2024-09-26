@@ -68,8 +68,8 @@ links = step.links()
 bounds = step.bounds(data, heap)
 
 # links.indirect[:, 0].show(links.indirect[:, 0].walk(), *bounds[:, 0], step[0])
-links.show(links.walk(), *bounds, threshold=heap.key_max)
-print(heap)
+# links.show(links.walk(), *bounds, threshold=heap.key_max)
+# print(heap)
 
 # jax.config.update("jax_disable_jit", True)
 filtered = links.rebuild(step, bounds, heap, data)
