@@ -50,25 +50,12 @@ class Heap(Group):
             return jax.lax.fori_loop(0, self.shape[2], inner, heap)
         return jax.lax.fori_loop(0, self.shape[1], outer, self)
 
-    # low memory but O(size); PyNNDescent uses python sets in high memory mode
-    # most devices probably vectorize it since it's a contiguous chunk of int32s
-    # a binary search might be worth profiling but GPU jobs are usually IO bound
-    # rapids uses bloom filters (even though they're removing elements?)
+    # low memory but O(size); O(log n) implementation via AVLs
+    # PyNNDescent uses python sets in high memory mode and this for low memory
+    # Rapids uses bloom filters b/c removed elements can't get re-added anyways
     def check(self, ins, idx):
         return jnp.all(ins[idx][None] != self[idx])
 
-    # TODO: creating an updated index then doing a gather might be better than
-    #   ... CaS followed by read dependencies? may have the same problem though
-    #       need to think through the op order and what branch prediction can do
-    #       even XLA native sort might be better because of sorting networks
-    #       regardless, in practice this can be improved for consecutive inserts
-    #       rapids keeps a fully ordered list using insertion sort and memmove
-    #   ... but XLA can't guarantee contiguous memory blocks move efficiently
-    #       asymptotically optimal is probably just a sorted tree data structure
-    #       sort (distance, index) to prevent extra traversal for deduplication
-    #       child pointers via an extra level of indirection alongside the heap
-    #   ... is better for space efficiency and tree balance requirements
-    #       it would be nice to be a strict superset of functionality
     def push(self, *value, checked=()):
         assert len(value) <= len(self), \
                 f"can't push {len(value)} values to a group of {len(self)}"
@@ -175,7 +162,7 @@ class NNDHeap(Heap, grouping(
         return heap, total + added
 
     @partial(jax.jit, static_argnames=('dist',))
-    def update(self, candidates, data, dist=euclidean):
+    def update(self, data, candidates, dist=euclidean):
         return candidates.updates(
                 self.accumulator, self.distances[:, 0], data, self, 0,
                 dist=dist)
@@ -252,37 +239,3 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
     # jax.lax.cond(i < iters, lambda: jax.debug.print(
     #         "stopped early after {} iterations", i), lambda: None)
     return rng, heap.ascending()
-
-TestingConfig = namedtuple(
-        "Config",
-        ("points", "neighbors", "max_candidates", "n_trees", "ndim", "seed"),
-        defaults=(512, 8, 4, 2, 8, 0))
-
-def test_step(*a, **kw):
-    setup = TestingConfig(*a, **kw)
-    rng = jax.random.key(setup.seed)
-    rng, subkey = jax.random.split(rng)
-    data = jax.random.normal(subkey, (setup.points, setup.ndim))
-    rng, heap = aknn(
-            setup.neighbors, rng, data, max_candidates=setup.max_candidates,
-            n_trees=setup.n_trees)
-    return data, heap
-
-def npy_cache(uniq, *, ndim=16, path=None, **kw):
-    import pathlib
-    path = pathlib.Path.cwd() if path is None else pathlib.Path(path)
-    path = path.parents[0] if path.is_file() else path
-    assert path.is_dir()
-    full = path / f"{uniq}.npz"
-    if not full.is_file():
-        data, heap = test_step(ndim=ndim, **kw)
-        jnp.savez(full, data, heap)
-    else:
-        data, heap = jnp.load(full).values()
-        heap = NNDHeap.tree_unflatten((), heap)
-    return data, heap
-
-if __name__ == "__main__":
-    import sys
-    heap = test_step(*map(int, sys.argv[1:]))
-    print(f"{heap=}")

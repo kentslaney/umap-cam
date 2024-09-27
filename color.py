@@ -209,27 +209,3 @@ class ViewingConditions:
         x, y = map(jnp.asarray, (jab0, jab1))
         eprime = jnp.sqrt(jnp.sum((x - y) ** 2))
         return 1.41 * eprime ** 0.63
-
-def domain_bounds(lo=0, hi=1, points=100):
-    inputs = jnp.linspace(lo, hi, points + 1)
-    shape = (inputs.shape[0],) * 2
-    row = jnp.broadcast_to(inputs[:, None], shape)
-    col = jnp.broadcast_to(inputs[None, :], shape)
-    lo, hi = jnp.full(shape, lo), jnp.full(shape, hi)
-    faces = (
-            (lo, row, col), (row, lo, col), (row, col, lo),
-            (hi, row, col), (row, hi, col), (row, col, hi))
-    return jnp.concatenate(tuple(map(
-            lambda x: jnp.stack(x).T.reshape(-1, 3), faces)))
-
-def test_domain():
-    vc = ViewingConditions()
-    rgb = domain_bounds(-0.1, 1.1, 120)
-    res = vc.broadcast(rgb)
-    failures = jnp.any(jnp.isnan(res) | jnp.isinf(res), axis=1)
-    assert jnp.sum(failures) == 0
-
-if __name__ == "__main__":
-    vc = ViewingConditions()
-    rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3]])
-    print(vc.broadcast(rgb))

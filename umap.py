@@ -290,13 +290,12 @@ class CommutativeAdjacencies(Adjacencies):
 class AccumulatingOptimizer(Optimizer):
     iterator = CommutativeAdjacencies
     def epoch(self, f, n, rng, head, tail, adj):
-        rng, *subkeys = jax.random.split(rng, adj.shape[1] + 1)
-        subkeys = jnp.stack(subkeys)
+        subkeys = jax.random.split(rng, adj.shape[1] + 1)
         rng_wrapper = lambda i, n, *a: self.step(i, n, subkeys[i], *a)
         delta_head, delta_tail = map(partial(jnp.sum, axis=0), f(
                 rng_wrapper, n, head, tail, adj,
                 mt=tuple(jnp.zeros((2, *head.shape)))))
-        return rng, head + delta_head, tail + delta_tail, adj
+        return subkeys[-1], head + delta_head, tail + delta_tail, adj
 
     def step(self, i, n, rng, head_embedding, tail_embedding, adj):
         alpha = 1 - n / adj.n_epochs
@@ -307,38 +306,8 @@ class AccumulatingOptimizer(Optimizer):
         tail = negative * alpha if self.move_other else jnp.zeros_like(head)
         return head, tail
 
-# TODO: constrained optimization solution just needs the shape to be right
-#   ... scale bounds to domain and apply gradient to (soft-)boundary points
-#       the best option is probably just adding the rescale factor to the loss
-#       it adds a hyperparameter trading off space efficiency vs accuracy though
-#       penalize soft boundary via beta distribution non-linearity
-if __name__ == "__main__":
-    # from sklearn.datasets import load_digits
-    # from nnd import aknn, NNDHeap
-    # import pathlib
-    # data = load_digits().data
-    # path = pathlib.Path.cwd() / "digits.npy"
-    # if not path.is_file():
-    #     rng = jax.random.key(0)
-    #     rng, heap = aknn(14, rng, data)
-    #     jnp.save(path, heap)
-    # else:
-    #     heap = jnp.load(path)
-    #     heap = NNDHeap.tree_unflatten((), heap)
-    #
-    # rng = jax.random.key(0)
-    # rng, embed, adj = initialize(rng, data, heap, 2)
-    # rng, lo, hi = Optimizer().optimize(rng, embed, adj)
-
-    from nnd import npy_cache
-    data, heap = npy_cache("test_step", neighbors=14)
-    rng, embed, adj = initialize(jax.random.key(0), data, heap, 2)
-    rng, lo, hi = AccumulatingOptimizer().optimize(rng, embed, adj)
-    # print(lo)
-    # exit(0)
-
-    import matplotlib.pyplot as plt
-    fig0 = plt.figure()
-    ax0 = fig0.add_subplot(1, 1, 1)
-    ax0.scatter(*lo.T)
-    plt.show()
+# TODO: CAM16 constrained optimization just needs to encourage a cube shape
+#       adding at least one hyperparameter is inevitable since the trade-off is
+#   ... utilizing the full color spectrum versus embedding accuracy
+#       so add a multiple of volume to the loss wrt boundary positions and
+#   ... create a soft boundary by penalizing the points in the shrinkage volume

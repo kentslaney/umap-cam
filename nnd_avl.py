@@ -32,10 +32,9 @@ class NNDHeap(
         if limit < self.shape[2]:
             rng, subkey = jax.random.split(rng)
             order = jnp.tile(jnp.arange(self.shape[2]), (self.shape[1], 1))
-            order = jax.random.permute(subkey, order, 1, True)
-            split = jnp.take(self.flags, order, 1, unique_indices=True)
-            _, order = jax.lax.sort_key_val(split, order)
-            ordered = jnp.take(self.indices, order, 1, unique_indices=True)
+            order = jax.random.permutation(subkey, order, 1, True)
+            ordered = jax.lax.sort(jnp.stack((
+                self.flags, order, self.indices), 0), num_keys=1)[2]
         else:
             _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
         ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
@@ -65,17 +64,17 @@ class NNDHeap(
 
         def backfill(count, forward, ref):
             return jnp.where(
-                    (jnp.arange(self.shape[2]) < count) & (ref < 0),
+                    (jnp.arange(limit) < count) & (ref < 0),
                     forward, ref)
         ref = jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
         update = self.indices[:, :limit] != ref[1, :, ::-1]
-        unset = ((0, 0), (0, max(0, limit - self.shape[2])))
+        unset = ((0, 0), (0, max(0, self.shape[2] - limit)))
         update = jnp.pad(update, unset, constant_values=True)
         update = self.at["flags"].set(self.flags & update)
-        return update, NNDCandidates(*ref), rng
+        return update, NNDCandidates(*ref, data_points=self.spec.points), rng
 
     def randomize(self, data, rng, dist=euclidean):
-        def outer(rng, i, _, existing, flags):
+        def outer(rng, i, existing, flags):
             idx = jax.random.choice(
                     rng, self.shape[1] - 1, (self.shape[2],), False)
             idx = jnp.where(existing == -1, idx + (idx >= i), existing)
@@ -84,8 +83,9 @@ class NNDHeap(
             d, idx = jax.lax.sort_key_val(d, idx)
             return d[::-1], idx[::-1], flags
         rng = jax.random.split(rng, self.shape[1] + 1)
-        res = jax.vmap(outer)(rng[1:], jnp.arange(self.shape[1]), *self)
-        return self.tree_unflatten((), res), rng[0]
+        res = self.at[('distances', 'indices', 'flags'),].set(jax.vmap(outer)(
+                rng[1:], jnp.arange(self.shape[1]), self.indices, self.flags))
+        return res.remap().batched(), rng[0]
 
     def apply(self, update):
         def body(heap, primary, secondary):
@@ -99,7 +99,8 @@ class NNDHeap(
         bounds = candidates.bounds(data, self)
         links = candidates.links()
         filtered = links.rebuild(candidates, bounds, self, data, dist)
-        return self.remap('points').alongside(filtered, in_axes='trees').apply()
+        heap = self.remap('points').alongside(filtered, in_axes='trees').apply()
+        return heap, -1 # TODO
 
 @jax.tree_util.register_pytree_node_class
 class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
@@ -157,15 +158,16 @@ class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
 
 @jax.tree_util.register_pytree_node_class
 class Links(
-        marginalized("splits", "points", "addresses", tail=jnp.int32(-1)),
+        marginalized("splits", "data_points", "addresses", tail=jnp.int32(-1)),
         grouping("Links", ("splits", "points", "size", "addresses"), ("head",))
         ):
     @partial(jax.jit, static_argnames=("dist",))
     def rebuild(self, step, bound, heap, data, dist=euclidean):
+        idx = jnp.arange(step.shape[0])
         return jax.lax.scan(
                 bound.indirect[:, 0].following, (
-                    Filtered(self.spec.points, self.spec.size, dist=dist),
-                    heap, step, data), (bound, self, jnp.arange(2)))[0][0]
+                    Filtered(heap.spec.points, self.spec.size, dist=dist),
+                    heap, step, data), (bound, self, idx))[0][0]
 
     def follow(self, tail):
         # each point sampled a maximum of once per node
@@ -271,18 +273,18 @@ class Bounds(grouping(
                     links.tail, links.head, data, side)
         return (out, heap, step, data), None
 
-class Candidates:
+class Candidates(groupaux("data_points")):
     # could be built iteratively and stored
     # jax.scan over rows to create a linked list of reverse neighbors
     def links(self):
         def linker(head, args):
             node, i = args
-            oob = jnp.where(node == -1, self.spec.points, node)
+            oob = jnp.where(node == -1, self.data_points, node)
             res = jnp.where((node == -1)[:, None], -1, head[node])
             col = jnp.arange(self.spec.size)
             coords = jnp.stack((jnp.broadcast_to(i, self.spec.size), col), -1)
             return head.at[oob].set(coords, mode="drop"), res
-        init = jnp.full((self.spec.points, 2), -1)
+        init = jnp.full((self.data_points, 2), -1)
         f = lambda x: jax.lax.scan(
                 linker, init, (x, jnp.arange(self.spec.points)))
         res = jax.vmap(f)(jnp.stack(self))
@@ -319,7 +321,13 @@ class Candidates:
                 0, i, data, heap, prune, dist) for i in range(len(self)))
         return Bounds.tree_unflatten((), tuple(map(jnp.stack, zip(*res))))
 
+@jax.tree_util.register_pytree_node_class
 class NNDCandidates(Candidates, grouping(
         "NNDCandidates", ("points", "size"), ("old", "new"))):
+    pass
+
+@jax.tree_util.register_pytree_node_class
+class RPCandidates(groupaux("total"), Candidates, grouping(
+        "RPCandidates", ("points", "size"))):
     pass
 
