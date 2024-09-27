@@ -359,19 +359,17 @@ class TestCAM16(FlatTest, unittest.TestCase):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--umap-suite", action="store_true")
-    parser.add_argument("--ro-cache", action="store_true")
-    parser.add_argument("--debug", default=None)
-    parser.add_argument("--interactive", action="store_true")
-    parser.add_argument("--skip", action="store_true")
+    parser.add_argument("--umap-suite", "-u", action="store_true")
+    parser.add_argument("--ro-cache", "-r", action="store_true")
+    parser.add_argument("--debug", "-d", default=False, nargs="?")
+    parser.add_argument("--interactive", "-i", action="store_true")
     args, argv = parser.parse_known_args()
     if args.ro_cache:
         depends.ro_cache = True
-    if args.skip:
+    if args.debug is not False:
         depends.load()
-    elif args.debug:
-        depends.load()
-        depends.classes(args.debug).debug()
+        if args.debug:
+            depends.classes(args.debug).debug()
     elif args.umap_suite:
         depends.suite()
     else:
