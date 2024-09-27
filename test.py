@@ -12,6 +12,18 @@ def fold(rng, uniq: str):
     dk = jnp.uint32(int.from_bytes(dk[:4]))
     return jax.random.fold_in(rng, dk), dk
 
+class RouteResult:
+    def __init__(self, routes):
+        self.routes = routes
+
+    def __getitem__(self, i):
+        f = self.routes[i]
+        return getattr(inspect.getmodule(f),
+                f.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
+
+    def __call__(self, i):
+        return self[i](self.routes[i].__name__)
+
 class Depends:
     def __init__(self, path, seed=0, options: (str, None)=None):
         self.path = pathlib.Path(path).resolve()
@@ -20,6 +32,7 @@ class Depends:
         self.edges, self.outputs, self.cache_rng = {}, {}, {}
         self.failed, self.complete, self.validated = set(), set(), set()
         self.routes = {}
+        self.classes = RouteResult(self.routes)
         self.ro_cache = False
 
     prefix = "test_"
@@ -136,7 +149,7 @@ class Depends:
 
     def matches(self, deps, status, query):
         match = [i for i, j in zip(deps, status) if j is query]
-        end = " and " if len(match) > 1 else ""
+        end = "and " if len(match) > 1 else ""
         return ", ".join(match[:-1] + [end + match[-1]]) if match else None
 
     def ensure(self, uniq):
@@ -203,10 +216,7 @@ class Depends:
     def suite(self):
         suite = unittest.TestSuite()
         for i in self.topological():
-            f = self.routes[i]
-            test_case = getattr(inspect.getmodule(f),
-                    f.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
-            suite.addTest(test_case(f.__name__))
+            suite.addTest(self.classes(i))
         unittest.TextTestRunner().run(suite)
 
 class Options:
@@ -309,6 +319,14 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         delta = 2 * (std[1] - std[0]) / jnp.sum(std)
         return lo
 
+    @depends("heap_avl_build", rng=True)
+    def test_constrained_umap(self, rng, heap_avl_build, data):
+        from umap import initialize, ConstrainedOptimizer
+        rng, embed, adj = initialize(rng, data, heap_avl_build, n_components=3)
+        optimizer = ConstrainedOptimizer(verbose=False, constrained_cols=2)
+        rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        return lo
+
 class TestCAM16(FlatTest, unittest.TestCase):
     @staticmethod
     def domain_bounds(lo=0, hi=1, points=100):
@@ -343,11 +361,22 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--umap-suite", action="store_true")
     parser.add_argument("--ro-cache", action="store_true")
+    parser.add_argument("--debug", default=None)
+    parser.add_argument("--interactive", action="store_true")
+    parser.add_argument("--skip", action="store_true")
     args, argv = parser.parse_known_args()
     if args.ro_cache:
         depends.ro_cache = True
-    if args.umap_suite:
+    if args.skip:
+        depends.load()
+    elif args.debug:
+        depends.load()
+        depends.classes(args.debug).debug()
+    elif args.umap_suite:
         depends.suite()
     else:
         unittest.main(argv=sys.argv[:1] + argv)
+    if args.interactive:
+        for k, v in depends.outputs.items():
+            globals()[k] = v
 

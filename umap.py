@@ -306,28 +306,83 @@ class AccumulatingOptimizer(Optimizer):
         tail = negative * alpha if self.move_other else jnp.zeros_like(head)
         return head, tail
 
-# TODO: CAM16 constrained optimization just needs to encourage a cube shape
-#       adding at least one hyperparameter is inevitable since the trade-off is
-#   ... utilizing the full color spectrum versus embedding accuracy
-#       so add a multiple of volume(-ish) to the loss wrt boundary positions and
-#   ... create a soft boundary by penalizing the points in the shrinkage volume
+@jax.tree_util.register_pytree_node_class
+class Extrema(
+        outgroup("mask"), groupaux(axis=0),
+        grouping("Extrema", names=("min", "max"))):
+    @classmethod
+    def of(cls, data, axis=0, cols=None):
+        cols = range(data.shape[1]) if cols is None else cols
+        _cols, cols = cols, jnp.asarray(cols)
+        cols = -jnp.ones(1) if cols is None else jnp.where(
+                cols < 0, data.shape[1] + cols, cols)
+        mask = jnp.any(
+                jnp.arange(data.shape[1])[None] == cols[..., None],
+                0, keepdims=True)
+        return cls.tree_unflatten((axis if _cols is None else _cols[axis],), (
+                jnp.min(mask * data, axis), jnp.max(mask * data, axis), mask))
+
+    @property
+    def delta(self):
+        return self.max - self.min
+
+    def clamp(self, data):
+        axis = set(range(data.ndim))
+        axis.remove(self.axis)
+        axis = next(iter(axis))
+        res = jax.vmap(jax.vmap(jax.lax.clamp, (0, None, None)), (
+                axis, 0, 0), axis)(data, self.min, self.max)
+        return self.mask * res + ~self.mask * data
+
+    @property
+    def norm(self):
+        return jnp.sqrt(jnp.sum((self.max - self.min) ** 2))
+
+    def rescale(self, data, by=None):
+        by = self.unit - self if by is None else by
+        factor = (1 + jnp.where(self.mask, by.delta / self.delta, 0))
+        return (1 - factor) * self.min + by.min + factor * data
+
+    def __sub__(self, other):
+        return self.tree_unflatten(
+                (self.axis,),
+                (self.min - other.min, self.max - other.max, self.mask))
+
+    def __neg__(self):
+        return self.tree_unflatten(
+                (self.axis,), (-self.min, -self.max, self.mask))
+
+    @property
+    def unit(self):
+        bounds = jnp.asarray([[0], [1]], jnp.float32)
+        return self.tree_unflatten(
+                (self.axis,), (*bounds * self.mask, self.mask))
+
 @jax.tree_util.register_pytree_node_class
 class ConstrainedOptimizer(AccumulatingOptimizer):
-    def __init__(self, *a, shapely_lambda=0.01, constrained_axes=None, **kw):
-        super().__init__(*a, **kw)
+    order = (
+            AccumulatingOptimizer.order[0],
+            AccumulatingOptimizer.order[1] + (
+                "shapely_lambda", "constrained_cols"))
+    def __init__(self, *a, shapely_lambda=1e-3, constrained_cols=None, **kw):
         # TODO: ratio of distance along constrained axes vs spacial ones
         # TODO: update self.dist
-        self.shapely_lambda, self.constrained_axes = shapely, constrained_axes
+        self.shapely_lambda = shapely_lambda
+        self.constrained_cols = constrained_cols
+        super().__init__(*a, **kw)
+
+    @property
+    def cols(self):
+        return tuple(range(self.constrained_cols)) if \
+                isinstance(self.constrained_cols, int) else \
+                self.constrained_cols
 
     def epoch(self, f, n, rng, head, tail, adj):
+        delta = Extrema.of(head, cols=self.cols)
         rng, head, tail, adj = super().epoch(f, n, rng, head, tail, adj)
-        lo, hi = jnp.min(head, 1), jnp.max(head, 1)
-        loss = jnp.sum((hi - lo) ** 2) * self.shapely_lambda
-        # partial loss / d delta
-        # rescale is relative to each axis of delta
-        offset = lo + (hi - lo) * (rescale - 1) / 2
-        # select points outside the unit cube after the updated points rescaling
-        # loss = 0.5 * distance to projection onto unit cube
-        # the 0.5 constant isn't sensative, just needs to force an equilibrium
-        # so that it stops when the outward sample pressure equals the shrinkage
+        delta_prime = Extrema.of(head, cols=self.cols)
+        head += (delta.clamp(head) - head) / 2
+        loss = lambda delta: delta.norm * self.shapely_lambda
+        grad = jax.grad(loss, allow_int=True)(delta_prime)
+        head = delta_prime.rescale(head, -grad)
         return rng, head, tail, adj
