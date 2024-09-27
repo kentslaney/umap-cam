@@ -100,7 +100,7 @@ class NNDHeap(
         links = candidates.links()
         filtered = links.rebuild(candidates, bounds, self, data, dist)
         heap = self.remap('points').alongside(filtered, in_axes='trees').apply()
-        return heap, -1 # TODO
+        return heap, jnp.sum(filtered.secondary != -1)
 
 @jax.tree_util.register_pytree_node_class
 class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):

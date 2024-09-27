@@ -20,6 +20,7 @@ class Depends:
         self.edges, self.outputs, self.cache_rng = {}, {}, {}
         self.failed, self.complete, self.validated = set(), set(), set()
         self.routes = {}
+        self.ro_cache = False
 
     prefix = "test_"
     def __call__(self, *on, rng=False):
@@ -82,6 +83,8 @@ class Depends:
             self.outputs[k[len(self.prefix) + 1:]] = res
 
     def save(self):
+        if self.ro_cache:
+            return
         outputs = {self.prefix + k: v for k, v in self.outputs.items()}
         res = {self.rng_prefix + k: v for k, v in self.cache_rng.items()}
         for k, v in outputs.items():
@@ -93,8 +96,9 @@ class Depends:
                 else:
                     res[k] = v
                 continue
-            res["_" + k] = \
-                    f"{v.__class__.__module__}-{v.__class__.__qualname__}"
+            res["_" + k] = (
+                    inspect.getmodule(v.__class__).__name__ + "-" +
+                    v.__class__.__qualname__)
             children, aux_data = v.tree_flatten()
             for i in range(len(children)):
                 res[f"child_{i}_{k}"] = children[i]
@@ -195,11 +199,14 @@ class Depends:
                 return (a > b) - (a < b)
         return DependsLoader()
 
-    # doesn't accept CLI args and makes caching pointless
+    # doesn't accept CLI args but can initialize the cache
     def suite(self):
         suite = unittest.TestSuite()
         for i in self.topological():
-            suite.addTest(self.routes[i])
+            f = self.routes[i]
+            test_case = getattr(inspect.getmodule(f),
+                    f.__qualname__.split('.<locals>', 1)[0].rsplit('.', 1)[0])
+            suite.addTest(test_case(f.__name__))
         unittest.TextTestRunner().run(suite)
 
 class Options:
@@ -333,5 +340,14 @@ class TestCAM16(FlatTest, unittest.TestCase):
         self.assertAlmostEqual(area, 0, 3)
 
 if __name__ == '__main__':
-    unittest.main()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--umap-suite", action="store_true")
+    parser.add_argument("--ro-cache", action="store_true")
+    args, argv = parser.parse_known_args()
+    if args.ro_cache:
+        depends.ro_cache = True
+    if args.umap_suite:
+        depends.suite()
+    else:
+        unittest.main(argv=sys.argv[:1] + argv)
 
