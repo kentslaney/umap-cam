@@ -309,5 +309,25 @@ class AccumulatingOptimizer(Optimizer):
 # TODO: CAM16 constrained optimization just needs to encourage a cube shape
 #       adding at least one hyperparameter is inevitable since the trade-off is
 #   ... utilizing the full color spectrum versus embedding accuracy
-#       so add a multiple of volume to the loss wrt boundary positions and
+#       so add a multiple of volume(-ish) to the loss wrt boundary positions and
 #   ... create a soft boundary by penalizing the points in the shrinkage volume
+@jax.tree_util.register_pytree_node_class
+class ConstrainedOptimizer(AccumulatingOptimizer):
+    def __init__(self, *a, shapely_lambda=0.01, constrained_axes=None, **kw):
+        super().__init__(*a, **kw)
+        # TODO: ratio of distance along constrained axes vs spacial ones
+        # TODO: update self.dist
+        self.shapely_lambda, self.constrained_axes = shapely, constrained_axes
+
+    def epoch(self, f, n, rng, head, tail, adj):
+        rng, head, tail, adj = super().epoch(f, n, rng, head, tail, adj)
+        lo, hi = jnp.min(head, 1), jnp.max(head, 1)
+        loss = jnp.sum((hi - lo) ** 2) * self.shapely_lambda
+        # partial loss / d delta
+        # rescale is relative to each axis of delta
+        offset = lo + (hi - lo) * (rescale - 1) / 2
+        # select points outside the unit cube after the updated points rescaling
+        # loss = 0.5 * distance to projection onto unit cube
+        # the 0.5 constant isn't sensative, just needs to force an equilibrium
+        # so that it stops when the outward sample pressure equals the shrinkage
+        return rng, head, tail, adj

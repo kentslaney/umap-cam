@@ -336,8 +336,8 @@ class TestCAM16(FlatTest, unittest.TestCase):
         vc = ViewingConditions()
         rgb = jnp.asarray([[0.1, 0.4, 0.3], [0, 0.4, 0.3], [-0.1, 0.4, 0.3]])
         cam = vc.broadcast(rgb)
-        area = jnp.sum((jnp.cross(cam[1] - cam[0], cam[2] - cam[0])) ** 2)
-        self.assertAlmostEqual(area, 0, 3)
+        area_2 = jnp.sum((jnp.cross(cam[1] - cam[0], cam[2] - cam[0])) ** 2)
+        self.assertAlmostEqual(area_2, 0, 3)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
