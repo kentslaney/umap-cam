@@ -311,7 +311,7 @@ class Extrema(
         outgroup("mask"), groupaux(axis=0),
         grouping("Extrema", names=("min", "max"))):
     @classmethod
-    def of(cls, data, axis=0, cols=None):
+    def of(cls, data, cols=None, axis=0):
         cols = range(data.shape[1]) if cols is None else cols
         _cols, cols = cols, jnp.asarray(cols)
         cols = -jnp.ones(1) if cols is None else jnp.where(
@@ -365,8 +365,6 @@ class ConstrainedOptimizer(AccumulatingOptimizer):
             AccumulatingOptimizer.order[1] + (
                 "shapely_lambda", "constrained_cols"))
     def __init__(self, *a, shapely_lambda=1e-3, constrained_cols=None, **kw):
-        # TODO: ratio of distance along constrained axes vs spacial ones
-        # TODO: update self.dist
         self.shapely_lambda = shapely_lambda
         self.constrained_cols = constrained_cols
         super().__init__(*a, **kw)
@@ -378,9 +376,9 @@ class ConstrainedOptimizer(AccumulatingOptimizer):
                 self.constrained_cols
 
     def epoch(self, f, n, rng, head, tail, adj):
-        delta = Extrema.of(head, cols=self.cols)
+        delta = Extrema.of(head, self.cols)
         rng, head, tail, adj = super().epoch(f, n, rng, head, tail, adj)
-        delta_prime = Extrema.of(head, cols=self.cols)
+        delta_prime = Extrema.of(head, self.cols)
         head += (delta.clamp(head) - head) / 2
         loss = lambda delta: delta.norm * self.shapely_lambda
         grad = jax.grad(loss, allow_int=True)(delta_prime)

@@ -29,10 +29,10 @@ class WhitePoint(_WhitePoint):
 
 _ColorSpec = namedtuple("ColorSpec", [
         "gamma", "x_r", "y_r", "x_g", "y_g", "x_b", "y_b"])
+_Gamma = namedtuple("Gamma", ["gamma", "a"], defaults=[0])
 
-class Gamma:
+class Gamma(_Gamma):
     def __init__(self, gamma, a=0.):
-        self.gamma, self.a = gamma, a
         self.x = a / (gamma - 1)
         self.phi = (1 + a) ** gamma * (gamma - 1) ** (gamma - 1) / \
                 (a ** (gamma - 1) * gamma ** gamma)
@@ -70,22 +70,17 @@ JChQMsH = namedtuple(
         "JChQMsH", ["j", "c", "h", "q", "m", "s", "hq", "h_"], defaults=[None])
 Jab = namedtuple("Jab", ["j", "a", "b"])
 
-class ViewingConditions:
-    # https://en.wikipedia.org/wiki/SRGB#Viewing_environment
-    y_b = 0.2 # luminance factor of the background
-    e_w = 64 # illuminance of reference white in lux
-    spec = ColorSpec.S_RGB
-    white = WhitePoint.D65_2DEG
-    surroundings = CIECAM02Surround.AVERAGE
-    def __init__(
-            self, y_b=None, e_w=None, spec=None, white=None, surroundings=None):
-        self.y_b = self.y_b if y_b is None else y_b
-        self.e_w = self.e_w if e_w is None else e_w
-        self.spec = self.spec if spec is None else spec
-        self.white = self.white if white is None else white
-        self.surroundings = self.surroundings if surroundings is None \
-                else surroundings
+# https://en.wikipedia.org/wiki/SRGB#Viewing_environment
+# y_b = luminance factor of the background
+# e_w = illuminance of reference white in lux
+_ViewingConditions = namedtuple(
+        "ViewingConditions", ["y_b", "e_w", "spec", "white", "surroundings"],
+        defaults=[
+            0.2, 64, ColorSpec.S_RGB, WhitePoint.D65_2DEG,
+            CIECAM02Surround.AVERAGE])
 
+class ViewingConditions(_ViewingConditions):
+    def __init__(self, *a, **kw):
         self.l_a = self.e_w * self.y_b / (jnp.pi * self.white.y_w)
         self.xyz_w = jnp.asarray(self.white)[:, None] / self.white.y_w
         self.rgb_w = M_16 @ self.xyz_w
@@ -192,7 +187,6 @@ class ViewingConditions:
         eps = jax.lax.dot_general(grad, delta, (((2,), (0,)), ((0,), (1,))))
         return res + jnp.select([oob, True], [eps.transpose(), 0])
 
-    @partial(jax.jit, static_argnums=0, static_argnames=("f", "axis"))
     def broadcast(self, rgb, *, axis=-1, f="projected"):
         # transforms are channel first since that's how the paper organized them
         assert rgb.shape[axis] == 3
@@ -205,7 +199,43 @@ class ViewingConditions:
         shaped = res.reshape(res.shape[:1] + shuffled.shape[1:])
         return shaped.transpose(list(range(1, axis + 1)) + [0] + after)
 
+    @jax.jit
     def delta(self, jab0, jab1):
         x, y = map(jnp.asarray, (jab0, jab1))
         eprime = jnp.sqrt(jnp.sum((x - y) ** 2))
         return 1.41 * eprime ** 0.63
+
+from umap import ConstrainedOptimizer, Extrema
+
+@jax.tree_util.register_pytree_node_class
+class CAM16Optimizer(ConstrainedOptimizer):
+    order = (
+            ConstrainedOptimizer.order[0] + ("extrema", "vc"),
+            ConstrainedOptimizer.order[1] + ("color_scale",))
+
+    def __init__(
+            self, *a, constrained_cols=3, color_scale=23., extrema=None,
+            vc=None, **kw):
+        # TODO: ratio of distance along constrained axes vs spacial ones
+        # TODO: update self.dist
+        self.color_scale = color_scale
+        super().__init__(*a, constrained_cols=constrained_cols, **kw)
+        self.extrema = Extrema.of(jnp.zeros((1, 2)), self.cols).unit \
+                if extrema is None else extrema
+        self.vc = ViewingConditions() if vc is None else vc
+
+    def epoch(self, f, n, rng, head, tail, adj):
+        self.extrema = Extrema.of(head, self.cols)
+        return super().epoch(f, n, rng, head, tail, adj)
+
+    @property
+    def spacial(self):
+        return [i for i in range(self.extrema.mask.size) if i not in self.cols]
+
+    def dist(self, *args):
+        res = self.extrema.rescale(jnp.stack(args))
+        res = jnp.stack([jnp.stack([i[j] for j in self.cols]) for i in args])
+        others = jnp.stack([
+                jnp.stack([i[j] for j in self.spacial]) for i in args])
+        res = self.vc.delta(*self.vc.broadcast(res)) / self.color_scale
+        return res + super().dist(*others)

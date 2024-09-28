@@ -152,7 +152,7 @@ class Depends:
         end = "and " if len(match) > 1 else ""
         return ", ".join(match[:-1] + [end + match[-1]]) if match else None
 
-    def ensure(self, uniq):
+    def ensure(self, uniq, f, a, kw):
         # unittest.skip raises unittest.SkipTest
         deps = self.topological(uniq)
         status = tuple(map(self.status, deps[:-1]))
@@ -166,7 +166,7 @@ class Depends:
         elif self.TEST_STALE in status:
             stale = self.matches(deps, status, self.TEST_STALE)
             stale = f"cached results for dependency tests {stale} are stale"
-            unittest.skip(failed)(f)(*a, **kw)
+            unittest.skip(stale)(f)(*a, **kw)
         return deps
 
     @staticmethod
@@ -180,7 +180,7 @@ class Depends:
         return a, kw
 
     def bind_deps(self, uniq, f, a, kw):
-        deps = self.ensure(uniq)
+        deps = self.ensure(uniq, f, a, kw)
         sig = inspect.getfullargspec(f)
         for dep in deps:
             if dep in sig.args or dep in sig.kwonlyargs:
@@ -222,15 +222,14 @@ class Depends:
 class Options:
     hashing = (
             "points", "k_neighbors", "max_candidates", "ndim", "n_trees",
-            "n_nnd_iter", "n_components")
+            "n_nnd_iter")
     names = ("seed",) + hashing
     points = 32
     k_neighbors = 15
     max_candidates = 7
-    ndim = 4
+    ndim = 8
     n_trees = 2
     n_nnd_iter = 3
-    n_components = 2
     seed = 0
 
     @property
@@ -327,6 +326,15 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         return lo
 
+    @depends("heap_avl_build", rng=True)
+    def test_cam16_umap(self, rng, heap_avl_build, data):
+        from umap import initialize
+        from color import CAM16Optimizer
+        rng, embed, adj = initialize(rng, data, heap_avl_build, n_components=4)
+        optimizer = CAM16Optimizer(verbose=False)
+        rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        return lo
+
 class TestCAM16(FlatTest, unittest.TestCase):
     @staticmethod
     def domain_bounds(lo=0, hi=1, points=100):
@@ -356,6 +364,28 @@ class TestCAM16(FlatTest, unittest.TestCase):
         cam = vc.broadcast(rgb)
         area_2 = jnp.sum((jnp.cross(cam[1] - cam[0], cam[2] - cam[0])) ** 2)
         self.assertAlmostEqual(area_2, 0, 3)
+
+    def test_scale(self):
+        from color import ViewingConditions, CAM16Optimizer
+        vc = ViewingConditions()
+        rng = jax.random.key(0)
+        rng, subkey = jax.random.split(rng)
+        rgb = jax.random.uniform(subkey, (10000, 3))
+        cam = vc.broadcast(rgb)
+        samples = jnp.int32(rgb.shape[0] ** 2 / 2 * 0.01)
+        rng, subkey = jax.random.split(rng)
+        cross = jax.random.randint(subkey, (samples, 2), 0, rgb.shape[0])
+        deltas = jax.vmap(vc.delta)(*jnp.unstack(cam[cross], axis=1))
+        reference = jnp.linalg.norm(rgb[cross][:, 1] - rgb[cross][:, 0], axis=1)
+        sparse = vc.broadcast(self.domain_bounds(points=5))
+        cross = jnp.stack([i.flatten()
+                for i in jnp.meshgrid(*(jnp.arange(sparse.shape[0]),) * 2)])
+        sparse = jax.vmap(vc.delta)(*jnp.unstack(sparse[cross.T], axis=1))
+
+        distribution = (jnp.mean(deltas), jnp.std(deltas), jnp.max(sparse))
+        identity = (jnp.mean(reference), jnp.std(reference), jnp.max(reference))
+        default = CAM16Optimizer().color_scale
+        self.assertAlmostEqual(distribution[0] / identity[0], default, 0)
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
