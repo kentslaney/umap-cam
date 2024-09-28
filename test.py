@@ -355,7 +355,7 @@ class TestCAM16(FlatTest, unittest.TestCase):
         rgb = self.domain_bounds(-0.1, 1.1, 120)
         res = vc.broadcast(rgb)
         failures = jnp.any(jnp.isnan(res) | jnp.isinf(res), axis=1)
-        assert jnp.sum(failures) == 0
+        self.assertEqual(jnp.sum(failures), 0)
 
     def test_boundaries(self):
         from color import ViewingConditions
@@ -370,7 +370,7 @@ class TestCAM16(FlatTest, unittest.TestCase):
         vc = ViewingConditions()
         rng = jax.random.key(0)
         rng, subkey = jax.random.split(rng)
-        rgb = jax.random.uniform(subkey, (10000, 3))
+        rgb = jax.random.uniform(subkey, (10_000, 3))
         cam = vc.broadcast(rgb)
         samples = jnp.int32(rgb.shape[0] ** 2 / 2 * 0.01)
         rng, subkey = jax.random.split(rng)

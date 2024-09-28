@@ -235,5 +235,7 @@ class CAM16Optimizer(ConstrainedOptimizer):
         res = jnp.stack([jnp.stack([i[j] for j in self.cols]) for i in args])
         others = jnp.stack([
                 jnp.stack([i[j] for j in self.spacial]) for i in args])
-        res = self.vc.delta(*self.vc.broadcast(res)) / self.color_scale
+        res = self.vc.delta(*self.vc.broadcast(res))
+        ndim_ratio = jnp.sqrt(len(self.spacial) / max(1, len(self.cols)))
+        res *= ndim_ratio / self.color_scale
         return res + super().dist(*others)
