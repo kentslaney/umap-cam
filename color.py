@@ -216,8 +216,6 @@ class CAM16Optimizer(ConstrainedOptimizer):
     def __init__(
             self, *a, constrained_cols=3, color_scale=23., extrema=None,
             vc=None, **kw):
-        # TODO: ratio of distance along constrained axes vs spacial ones
-        # TODO: update self.dist
         self.color_scale = color_scale
         super().__init__(*a, constrained_cols=constrained_cols, **kw)
         self.extrema = Extrema.of(jnp.zeros((1, 2)), self.cols).unit \
