@@ -308,6 +308,13 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
             rpt_heap_avl, changes = rpt_heap_avl.update(data, step)
         return rpt_heap_avl
 
+    @depends("rpt_heap_avl", rng=True)
+    def test_heap_avl_initial_changes(self, rng, rpt_heap_avl, data):
+        rpt_heap_avl, step, rng = rpt_heap_avl.build(
+                opt.max_candidates, rng)
+        rpt_heap_avl, changes = rpt_heap_avl.update(data, step)
+        self.assertNotEqual(changes, 0)
+
     @depends("heap_avl_build", rng=True)
     def test_umap(self, rng, heap_avl_build, data):
         from umap import initialize, AccumulatingOptimizer

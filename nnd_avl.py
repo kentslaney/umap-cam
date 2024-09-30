@@ -33,8 +33,8 @@ class NNDHeap(
             rng, subkey = jax.random.split(rng)
             order = jnp.tile(jnp.arange(self.shape[2]), (self.shape[1], 1))
             order = jax.random.permutation(subkey, order, 1, True)
-            ordered = jax.lax.sort(jnp.stack((
-                self.flags, order, self.indices), 0), num_keys=1)[2]
+            ordered = jax.lax.sort((
+                self.flags, order, self.indices), num_keys=2)[2]
         else:
             _, ordered = jax.lax.sort_key_val(self.flags, self.indices)
         ordered = jnp.asarray((ordered[:, :limit], ordered[:, :~limit:-1]))
@@ -67,9 +67,9 @@ class NNDHeap(
                     (jnp.arange(limit) < count) & (ref < 0),
                     forward, ref)
         ref = jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
-        update = self.indices[:, :limit] != ref[1, :, ::-1]
+        update = ordered[1] != ref[1]
         unset = ((0, 0), (0, max(0, self.shape[2] - limit)))
-        update = jnp.pad(update, unset, constant_values=True)
+        update = jnp.pad(update, unset, constant_values=False)
         update = self.at["flags"].set(self.flags & update)
         return update, NNDCandidates(*ref, data_points=self.spec.points), rng
 
@@ -318,7 +318,7 @@ class Candidates(groupaux("data_points")):
     @partial(jax.jit, static_argnames=('prune', 'dist'))
     def bounds(self, data, heap, prune=True, dist=euclidean):
         res = tuple(self.bound(
-                0, i, data, heap, prune, dist) for i in range(len(self)))
+                "new", i, data, heap, prune, dist) for i in range(len(self)))
         return Bounds.tree_unflatten((), tuple(map(jnp.stack, zip(*res))))
 
 @jax.tree_util.register_pytree_node_class
