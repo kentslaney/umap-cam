@@ -31,13 +31,14 @@ class Depends:
         self._rng = rng if options is None else fold(rng, options)[0]
         self.edges, self.outputs, self.cache_rng = {}, {}, {}
         self.failed, self.complete, self.validated = set(), set(), set()
-        self.routes = {}
+        self.routes, self.names = {}, {}
         self.classes = RouteResult(self.routes)
         self.ro_cache = False
 
     prefix = "test_"
-    def __call__(self, *on, rng=False):
-        assert not any(i.startswith(self.prefix) for i in on)
+    def __call__(self, *on, rng=False, **renamed):
+        needed = tuple((*on, *renamed.values()))
+        assert not any(i.startswith(self.prefix) for i in needed)
         def decorator(f):
             @wraps(f)
             def wrapper(*a, **kw):
@@ -57,7 +58,8 @@ class Depends:
 
             assert f.__name__.startswith(self.prefix)
             uniq = f.__name__[len(self.prefix):]
-            self.edges[uniq] = list(sorted(on))
+            self.edges[uniq] = list(sorted(needed))
+            self.names[uniq] = dict(zip(renamed.values(), renamed.keys()))
             self.routes[uniq] = wrapper
             return wrapper
         return decorator
@@ -171,7 +173,8 @@ class Depends:
 
     @staticmethod
     def bind(f, arg, value, a, kw, sig=None):
-        assert arg not in kw
+        if arg in kw:
+            return a, kw
         sig = inspect.getfullargspec(f) if sig is None else sig
         if arg in sig.args and len(a) > (pos := sig.args.index(arg)):
             a.insert(value, pos)
@@ -183,8 +186,9 @@ class Depends:
         deps = self.ensure(uniq, f, a, kw)
         sig = inspect.getfullargspec(f)
         for dep in deps:
-            if dep in sig.args or dep in sig.kwonlyargs:
-                a, kw = self.bind(f, dep, self.outputs[dep], a, kw, sig)
+            if dep in sig.args + sig.kwonlyargs or dep in self.names[uniq]:
+                name = self.names[uniq].get(dep, dep)
+                a, kw = self.bind(f, name, self.outputs[dep], a, kw, sig)
         return deps, a, kw
 
     @property
@@ -277,67 +281,65 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         heap, rng = heap.randomize(data, rng)
         return heap
 
-    @depends("rpt", "heap")
-    def test_rpt_heap(self, rpt, heap, data):
+    @depends("heap", forest="rpt")
+    def test_rpt_heap(self, forest, heap, data):
         from nnd import RPCandidates
-        total, trees = rpt
+        total, trees = forest
         trees = RPCandidates(trees, total=total)
         heap, count = heap.update(data, trees)
         return heap
 
-    @depends("rpt", "heap_avl")
-    def test_rpt_heap_avl(self, rpt, heap_avl, data):
+    @depends(forest="rpt", heap="heap_avl")
+    def test_rpt_heap_avl(self, forest, heap, data):
         from nnd_avl import RPCandidates
-        total, trees = rpt
+        total, trees = forest
         trees = RPCandidates(trees, total=total, data_points=data.shape[0])
-        heap_avl, count = heap_avl.update(data, trees)
-        return heap_avl
+        heap, count = heap.update(data, trees)
+        return heap
 
-    @depends("rpt_heap", rng=True)
-    def test_heap_build(self, rng, rpt_heap, data):
+    @depends(rng=True, heap="rpt_heap")
+    def test_heap_build(self, rng, heap, data):
         for i in range(opt.n_nnd_iter):
-            rpt_heap, step, rng = rpt_heap.build(opt.max_candidates, rng)
-            rpt_heap, changes = rpt_heap.update(data, step)
-        return rpt_heap
+            heap, step, rng = heap.build(opt.max_candidates, rng)
+            heap, changes = heap.update(data, step)
+        return heap
 
-    @depends("rpt_heap_avl", rng=True)
-    def test_heap_avl_build(self, rng, rpt_heap_avl, data):
+    @depends(rng=True, heap="rpt_heap_avl")
+    def test_heap_avl_build(self, rng, heap, data):
         for i in range(opt.n_nnd_iter):
-            rpt_heap_avl, step, rng = rpt_heap_avl.build(
-                    opt.max_candidates, rng)
-            rpt_heap_avl, changes = rpt_heap_avl.update(data, step)
-        return rpt_heap_avl
+            heap, step, rng = heap.build(opt.max_candidates, rng)
+            heap, changes = heap.update(data, step)
+        return heap
 
-    @depends("rpt_heap_avl", rng=True)
-    def test_heap_avl_initial_changes(self, rng, rpt_heap_avl, data):
-        rpt_heap_avl, step, rng = rpt_heap_avl.build(
-                opt.max_candidates, rng)
-        rpt_heap_avl, changes = rpt_heap_avl.update(data, step)
+    @depends(rng=True, heap="rpt_heap_avl")
+    def test_heap_avl_initial_changes(self, rng, heap, data):
+        heap, step, rng = heap.build(opt.max_candidates, rng)
+        heap, changes = heap.update(data, step)
         self.assertNotEqual(changes, 0)
 
-    @depends("heap_avl_build", rng=True)
-    def test_umap(self, rng, heap_avl_build, data):
+    @depends(rng=True, heap="heap_avl_build")
+    def test_umap(self, rng, heap, data):
         from umap import initialize, AccumulatingOptimizer
-        rng, embed, adj = initialize(rng, data, heap_avl_build, n_components=2)
+        rng, embed, adj = initialize(rng, data, heap, n_components=2)
         optimizer = AccumulatingOptimizer(verbose=False)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         std = jnp.stack(tuple(map(jnp.std, (lo, hi))))
         delta = 2 * (std[1] - std[0]) / jnp.sum(std)
         return lo
 
-    @depends("heap_avl_build", rng=True)
-    def test_constrained_umap(self, rng, heap_avl_build, data):
+    @depends(rng=True, heap="heap_avl_build")
+    def test_constrained_umap(self, rng, heap, data):
         from umap import initialize, ConstrainedOptimizer
-        rng, embed, adj = initialize(rng, data, heap_avl_build, n_components=3)
+        rng, embed, adj = initialize(rng, data, heap, n_components=3)
         optimizer = ConstrainedOptimizer(verbose=False, constrained_cols=2)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         return lo
 
-    @depends("heap_avl_build", rng=True)
-    def test_cam16_umap(self, rng, heap_avl_build, data):
+    @depends(rng=True, heap="heap_avl_build")
+    def test_cam16_umap(self, rng, heap, data):
         from umap import initialize
         from color import CAM16Optimizer
-        rng, embed, adj = initialize(rng, data, heap_avl_build, n_components=4)
+        rng, embed, adj = initialize(rng, data, heap, n_components=4)
         optimizer = CAM16Optimizer(verbose=False)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         return lo
