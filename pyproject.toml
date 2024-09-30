@@ -10,3 +10,6 @@ venv = ".venv"
 name = "umap-cam"
 version = "0.1"
 dependencies = ["jax[cuda12]"]
+
+[project.optional-dependencies]
+test = ["scikit-learn"]

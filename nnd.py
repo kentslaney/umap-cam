@@ -225,14 +225,14 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
     heap, rng = heap.randomize(data, rng)
     if n_trees != 0:
         rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
-        heap, _ = heap.update(trees, data)
+        heap, _ = heap.update(data, trees)
     def cond(args):
         i, broken, _, _ = args
         return ~broken & (i < iters)
     def loop(args):
         i, _, heap, rng = args
         heap, step, rng = heap.build(max_candidates, rng)
-        heap, changes = heap.update(step, data)
+        heap, changes = heap.update(data, step)
         # jax.debug.print("finished iteration {} with {} updates", i, changes)
         return i + 1, changes <= delta * k * data.shape[0], heap, rng
     i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))

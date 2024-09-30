@@ -107,7 +107,7 @@ class Depends:
                 if isinstance(v, tuple):
                     res["_" + k] = "tuple"
                     for i in range(len(v)):
-                        res[f"child_{i}_{k}"] = children[i]
+                        res[f"child_{i}_{k}"] = v[i]
                 else:
                     res[k] = v
                 continue
@@ -343,6 +343,39 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         optimizer = CAM16Optimizer(verbose=False)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         return lo
+
+    @depends(rng=True)
+    def test_build_flipped(self, rng):
+        max_candidates, k_neighbors = opt.k_neighbors, opt.max_candidates
+        from nnd_avl import NNDHeap
+        rng, subkey = jax.random.split(rng)
+        data = jax.random.normal(subkey, (opt.points, opt.ndim))
+        heap = NNDHeap(data.shape[0], k_neighbors)
+        heap, rng = heap.randomize(data, rng)
+        heap, step, rng = heap.build(max_candidates, rng)
+        heap, changes = heap.update(data, step)
+        self.assertNotEqual(changes, 0)
+
+    @depends("data", rng=True)
+    def test_aknn(self, rng, data):
+        from nnd_avl import aknn
+        rng, heap = aknn(
+                opt.k_neighbors, rng, data, max_candidates=opt.max_candidates,
+                n_trees=opt.n_trees)
+        return heap
+
+class TestIntegration(FlatTest, unittest.TestCase):
+    def test_digits_avl_aknn(self):
+        from sklearn.datasets import load_digits
+        from nnd_avl import aknn
+        data = load_digits().data
+        rng, heap = aknn(15, jax.random.key(0), data, n_trees=0)
+
+    def test_digits_aknn(self):
+        from sklearn.datasets import load_digits
+        from nnd_avl import aknn
+        data = load_digits().data
+        rng, heap = aknn(15, jax.random.key(0), data, n_trees=0)
 
 class TestCAM16(FlatTest, unittest.TestCase):
     @staticmethod

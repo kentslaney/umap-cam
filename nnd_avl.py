@@ -3,6 +3,7 @@ import jax
 import jax.numpy as jnp
 from group import grouping, group_alias, dim_alias, marginalized, groupaux
 from avl import MaxAVL, AVLs, Predecessors
+from rpt import forest
 
 euclidean = jax.jit(lambda x, y: jnp.sqrt(jnp.sum((x - y) ** 2)))
 
@@ -52,7 +53,7 @@ class NNDHeap(
         d = jax.random.uniform(subkey, ordered.shape)
         d = jnp.int32(jnp.maximum(d, n < limit) * n)
 
-        mask = jnp.arange(limit)[None] < counts[:, :, None]
+        mask = jnp.arange(ordered.shape[2])[None] < counts[:, :, None]
         oob = jnp.stack((self.shape[1], limit))[None, :, None, None]
         d = jnp.where(mask[:, None], jnp.stack((ordered, d), 1), oob)
 
@@ -66,13 +67,16 @@ class NNDHeap(
             return jnp.where(
                     (jnp.arange(limit) < count) & (ref < 0),
                     forward, ref)
+        reset = ((0, 0), (0, 0), (0, max(0, limit - self.shape[2])))
+        ordered = jnp.pad(ordered, reset, constant_values=-1)
         ref = jax.vmap(jax.vmap(backfill))(counts, ordered, ref)
         update = ordered[1] != ref[1]
         unset = ((0, 0), (0, max(0, self.shape[2] - limit)))
         update = jnp.pad(update, unset, constant_values=False)
-        update = self.at["flags"].set(self.flags & update)
+        update = self.at["flags"].set(self.flags & update[:, :self.shape[2]])
         return update, NNDCandidates(*ref, data_points=self.spec.points), rng
 
+    @partial(jax.jit, static_argnames=("dist",))
     def randomize(self, data, rng, dist=euclidean):
         def outer(rng, i, existing, flags):
             idx = jax.random.choice(
@@ -95,6 +99,7 @@ class NNDHeap(
                     update[1] != -1, body, lambda *a: heap, heap, *update), None
         return jax.lax.scan(cond, self, tuple(update[('key', 'secondary'),]))[0]
 
+    @partial(jax.jit, static_argnames=("dist",))
     def update(self, data, candidates, dist=euclidean):
         bounds = candidates.bounds(data, self)
         links = candidates.links()
@@ -330,5 +335,30 @@ class NNDCandidates(Candidates, grouping(
 @jax.tree_util.register_pytree_node_class
 class RPCandidates(groupaux("total"), Candidates, grouping(
         "RPCandidates", ("points", "size"))):
-    pass
+    @classmethod
+    def forest(cls, rng, data, *a, **kw):
+        rng, total, trees = forest(rng, data, *a, **kw)
+        return rng, cls(trees, total=total, data_points=data.shape[0])
 
+
+@partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees"))
+def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
+    max_candidates = min(64, k) if max_candidates is None else max_candidates
+    heap = NNDHeap(data.shape[0], k)
+    heap, rng = heap.randomize(data, rng)
+    if n_trees != 0:
+        rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
+        heap, _ = heap.update(data, trees)
+    def cond(args):
+        i, broken, _, _ = args
+        return ~broken & (i < iters)
+    def loop(args):
+        i, _, heap, rng = args
+        heap, step, rng = heap.build(max_candidates, rng)
+        heap, changes = heap.update(data, step)
+        jax.debug.print("finished iteration {} with {} updates", i, changes)
+        return i + 1, changes <= delta * k * data.shape[0], heap, rng
+    i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
+    jax.lax.cond(i < iters, lambda: jax.debug.print(
+            "stopped early after {} iterations", i), lambda: None)
+    return rng, jax.lax.sort(heap, num_keys=2)
