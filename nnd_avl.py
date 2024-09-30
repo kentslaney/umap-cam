@@ -356,9 +356,9 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
         i, _, heap, rng = args
         heap, step, rng = heap.build(max_candidates, rng)
         heap, changes = heap.update(data, step)
-        jax.debug.print("finished iteration {} with {} updates", i, changes)
+        # jax.debug.print("finished iteration {} with {} updates", i, changes)
         return i + 1, changes <= delta * k * data.shape[0], heap, rng
     i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
-    jax.lax.cond(i < iters, lambda: jax.debug.print(
-            "stopped early after {} iterations", i), lambda: None)
+    # jax.lax.cond(i < iters, lambda: jax.debug.print(
+    #         "stopped early after {} iterations", i), lambda: None)
     return rng, jax.lax.sort(heap, num_keys=2)
