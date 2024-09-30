@@ -16,6 +16,7 @@ class NNDHeap(
             ("distances", "indices", "flags", "left", "right", "height"), (
                 jnp.float32(jnp.inf), jnp.int32(-1), jnp.bool(False),
                 jnp.int32(-1), jnp.int32(-1), jnp.int32(1)))):
+    @partial(jax.jit, static_argnames=("limit",))
     def build(self, limit, rng):
         # want to enable asyncronous writes but need deterministic order
         # original repo's implementation interleaves threads' memory access
@@ -23,7 +24,6 @@ class NNDHeap(
         # first pass over indices sorted by flag: jax.scan carrying count so far
         # second pass pallas which can have out of order write b/c cache misses
         # reservoir sample referenced row, writing iff the prev count is smaller
-        # requires atomic read/write; jax.experimental.pallas.atomic_max
 
         assert limit > 0, "limit should be strictly positive"
 
@@ -104,14 +104,14 @@ class NNDHeap(
 
 @jax.tree_util.register_pytree_node_class
 class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
-    @partial(jax.jit)
+    @jax.jit
     def pairs(self, coords, step, data, side):
         def body(el, ref):
             skip = (ref == -1) | (el == -1) | (el == ref)
             return jnp.where(skip, jnp.inf, self.dist(data[el], data[ref]))
         (row, col), ref = coords, jnp.stack(step)[(side, *coords)]
-        distances = jax.vmap(body, (0, None))(step[0, row], ref)
-        indices = jnp.where(jnp.isfinite(distances), step[0, row], -1)
+        distances = jax.vmap(body, (0, None))(step[-1, row], ref)
+        indices = jnp.where(jnp.isfinite(distances), step[-1, row], -1)
         return jax.lax.sort((distances, indices), num_keys=2)
 
     def filter(self, heap, step, bound, coords, links, data, side):
@@ -183,6 +183,7 @@ class Links(
         f = self.vmap().follow if split else self.follow
         return jax.vmap(f, in_axes=ax, out_axes=int(split))(self.tail)
 
+    # links.show(links.walk(), *bounds, threshold=heap.key_max)
     def show(self, dense, *data, full=False, **kw):
         lens = jnp.sum(jnp.all(dense != -1, axis=-1), axis=-1).T
         opt = jnp.get_printoptions()
@@ -318,7 +319,7 @@ class Candidates(groupaux("data_points")):
     @partial(jax.jit, static_argnames=('prune', 'dist'))
     def bounds(self, data, heap, prune=True, dist=euclidean):
         res = tuple(self.bound(
-                "new", i, data, heap, prune, dist) for i in range(len(self)))
+                -1, i, data, heap, prune, dist) for i in range(len(self)))
         return Bounds.tree_unflatten((), tuple(map(jnp.stack, zip(*res))))
 
 @jax.tree_util.register_pytree_node_class
