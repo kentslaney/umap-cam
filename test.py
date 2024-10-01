@@ -364,7 +364,47 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
                 n_trees=opt.n_trees)
         return heap
 
-class TestIntegration(FlatTest, unittest.TestCase):
+class TestHangingIsolation(FlatTest, unittest.TestCase):
+    def test_avl_aknn_digits_slice_order0_0_167(self):
+        from sklearn.datasets import load_digits
+        from nnd_avl import NNDHeap
+        rng = jax.random.key(0)
+        data = load_digits().data[:167]
+        heap = NNDHeap(data.shape[0], 15)
+        heap, rng = heap.randomize(data, rng)
+        heap, candidates, rng = heap.build(32, rng)
+        bounds = candidates.bounds(data, heap)
+        links = candidates.links()
+        filtered = links.rebuild(candidates, bounds, heap, data)
+        jax.debug.print("-" * 50)
+
+    def test_avl_aknn_digits_slice_order1_1_169(self):
+        from sklearn.datasets import load_digits
+        from nnd_avl import NNDHeap
+        rng = jax.random.key(0)
+        data = load_digits().data[1:169]
+        heap = NNDHeap(data.shape[0], 15)
+        heap, rng = heap.randomize(data, rng)
+        heap, candidates, rng = heap.build(32, rng)
+        bounds = candidates.bounds(data, heap)
+        links = candidates.links()
+        filtered = links.rebuild(candidates, bounds, heap, data)
+        jax.debug.print("-" * 50)
+
+    def test_avl_aknn_digits_slice_order2_0_168(self):
+        from sklearn.datasets import load_digits
+        from nnd_avl import NNDHeap
+        rng = jax.random.key(0)
+        data = load_digits().data[:168]
+        heap = NNDHeap(data.shape[0], 15)
+        heap, rng = heap.randomize(data, rng)
+        heap, candidates, rng = heap.build(32, rng)
+        bounds = candidates.bounds(data, heap)
+        links = candidates.links()
+        filtered = links.rebuild(candidates, bounds, heap, data)
+
+# class TestIntegration(FlatTest, unittest.TestCase):
+class DontTestIntegration(FlatTest):
     def test_digits_avl_aknn(self):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn

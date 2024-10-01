@@ -141,6 +141,7 @@ class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
             valid = (valid == -1) & (pairs[1] != -1)
             fit = jnp.sum(valid)
             valid = ~jax.vmap(heap.contains)(*pairs)
+            jax.debug.print("{} {} {}", coords, fit, ceil.path)
             return jax.lax.fori_loop(0, fit, lambda i, args: (*jax.lax.cond(
                     valid[i], lambda: push(*args[:2], args[2][i], args[3][i]),
                     lambda: args[:2]), *args[2:]), (out, ceil, *pairs))[:2]
