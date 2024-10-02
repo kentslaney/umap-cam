@@ -373,9 +373,9 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
              36.864616, 41.291645, 42.071370, 42.284748, 42.673176, 44.237990,
              30.886890, 31.701735, 44.429718, 26.115130, 30.886890, 43.197224,
              43.474130, 43.554560],
-            [  1, 121,  17,  81, 103,  57,   1, 103,  47,  68,  21, 122,  97,
-              16, 162,  59,  53,  11, 158,  76, 107,  14,  69,  24,  87,  90,
-              53,  70,  87, 147, 113, 100],
+            [  2, 121,  17,  81, 104,  57,   1, 103,  47,  68,  21, 122,  97,
+              16, 162,  59,  54,  11, 158,  76, 107,  14,  69,  24,  87,  90,
+              53,  70,  88, 147, 113, 100],
             [ 6,  8, -1, 12,  7, -1, -1, -1,  0, 25,  9, -1,  1, 19, 22, 31, 26,
              -1, -1, 18, -1, -1, -1, -1, -1, -1, -1, -1, 24, -1, -1, 30],
             [27, 10, -1, 15, -1, -1, -1, -1, 28, -1, 11, 17, 13, 14,  2, 16,  5,
@@ -383,59 +383,10 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
             [ 2,  4,  1,  6,  2,  1,  1,  1,  3,  2,  3,  2,  5,  4,  3,  4,  2,
               1,  1,  3,  2,  1,  2,  1,  1,  1,  1,  1,  2,  1,  1,  3],
             jnp.int32(3), jnp.int32(32), jnp.int32(5)))
-        for i in (26, 15): # set 26, 15 to 43.358967, 18
-            tree = tree.remove(i)
-            tree = tree.at[('key', 'secondary'), i].set((43.358967, 18))
-            tree = tree.insert(i)
-        tree = tree.remove(4)
-        for i in (16,): # set 16, 5 to 42.638012, 43
-            tree = tree.remove(i)
-            tree = tree.at[('key', 'secondary'), i].set((42.638012, 43))
-            tree = tree.insert(i)
-        tree = tree.insert(4)
+        tree = tree.remove(16)
         self.assertTrue(tree.acyclic())
 
-class TestHangingIsolation(FlatTest, unittest.TestCase):
-    def test_avl_aknn_digits_slice_order0_0_167(self):
-        from sklearn.datasets import load_digits
-        from nnd_avl import NNDHeap
-        rng = jax.random.key(0)
-        data = load_digits().data[:167]
-        heap = NNDHeap(data.shape[0], 15)
-        heap, rng = heap.randomize(data, rng)
-        heap, candidates, rng = heap.build(32, rng)
-        bounds = candidates.bounds(data, heap)
-        links = candidates.links()
-        filtered = links.rebuild(candidates, bounds, heap, data)
-        jax.debug.print("-" * 50)
-
-    def test_avl_aknn_digits_slice_order1_1_169(self):
-        from sklearn.datasets import load_digits
-        from nnd_avl import NNDHeap
-        rng = jax.random.key(0)
-        data = load_digits().data[1:169]
-        heap = NNDHeap(data.shape[0], 15)
-        heap, rng = heap.randomize(data, rng)
-        heap, candidates, rng = heap.build(32, rng)
-        bounds = candidates.bounds(data, heap)
-        links = candidates.links()
-        filtered = links.rebuild(candidates, bounds, heap, data)
-        jax.debug.print("-" * 50)
-
-    def test_avl_aknn_digits_slice_order2_0_168(self):
-        from sklearn.datasets import load_digits
-        from nnd_avl import NNDHeap
-        rng = jax.random.key(0)
-        data = load_digits().data[:168]
-        heap = NNDHeap(data.shape[0], 15)
-        heap, rng = heap.randomize(data, rng)
-        heap, candidates, rng = heap.build(32, rng)
-        bounds = candidates.bounds(data, heap)
-        links = candidates.links()
-        filtered = links.rebuild(candidates, bounds, heap, data)
-
-# class TestIntegration(FlatTest, unittest.TestCase):
-class DontTestIntegration(FlatTest):
+class TestIntegration(FlatTest, unittest.TestCase):
     def test_digits_avl_aknn(self):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn
