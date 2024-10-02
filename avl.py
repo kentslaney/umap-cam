@@ -192,7 +192,8 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             path = path.at[:, idx].set((child, 1))
             path = path.at[:, path.start].set((grandchild, 0))
             t = t.at['left', path.path[path.start + 1]].set(grandchild)
-            t = t.at[('left', 'right'), child].set(t[('left', 'right'), x])
+            dereferenced = jnp.where(t.right[x] == child, -1, t.right[x])
+            t = t.at[('left', 'right'), child].set((t.left[x], dereferenced))
             path.height -= grandchild == -1
             return path, t, child
         def successor(args):
@@ -235,6 +236,10 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
                 path.start, path.shape[1], body, (path, t, -1))
         t.root = x
         return t
+
+    def arena(self):
+        jax.debug.print(
+                "{}\n{}\n{}", jnp.arange(self.shape[1]), self.left, self.right)
 
     tsv = lambda t, x: "\t".join(map(str, (
             x, f"{t.key[x]:.5f}", t.secondary[x], t.height[x])))
