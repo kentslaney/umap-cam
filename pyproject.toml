@@ -8,8 +8,10 @@ venv = ".venv"
 
 [project]
 name = "umap-cam"
-version = "0.1"
-dependencies = ["jax[cuda12]"]
+version = "0.2.0"
+dependencies = ["jax"]
+readme = "README.md"
 
 [project.optional-dependencies]
 test = ["scikit-learn", "matplotlib"]
+cuda12 = ["jax[cuda12]"]
