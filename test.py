@@ -386,18 +386,23 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         tree = tree.remove(16)
         self.assertTrue(tree.acyclic())
 
-class TestIntegration(FlatTest, unittest.TestCase):
-    def test_digits_avl_aknn(self):
+    @depends(rng=True)
+    def test_digits_avl_aknn(self, rng):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn
         data = load_digits().data
-        rng, heap = aknn(15, jax.random.key(0), data, n_trees=0)
+        rng, heap = aknn(15, rng, data)
+        return heap
 
-    def test_digits_aknn(self):
+    @depends(rng=True, heap="digits_avl_aknn")
+    def test_digits_avl_umap(self, rng, heap):
         from sklearn.datasets import load_digits
-        from nnd_avl import aknn
+        from umap import initialize, AccumulatingOptimizer
         data = load_digits().data
-        rng, heap = aknn(15, jax.random.key(0), data, n_trees=0)
+        rng, embed, adj = initialize(rng, data, heap, n_components=2)
+        optimizer = AccumulatingOptimizer(verbose=False)
+        rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        return lo
 
 class TestCAM16(FlatTest, unittest.TestCase):
     @staticmethod
@@ -451,16 +456,32 @@ class TestCAM16(FlatTest, unittest.TestCase):
         default = CAM16Optimizer().color_scale
         self.assertAlmostEqual(distribution[0] / identity[0], default, 0)
 
+def visualize(embedded):
+    import matplotlib.pyplot as plt
+    plt.scatter(*embedded.T)
+    plt.show()
+
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--umap-suite", "-u", action="store_true")
     parser.add_argument("--ro-cache", "-r", action="store_true")
     parser.add_argument("--debug", "-d", default=False, nargs="?")
     parser.add_argument("--interactive", "-i", action="store_true")
+    parser.add_argument("--digits", action="store_true")
     args, argv = parser.parse_known_args()
     if args.ro_cache:
         depends.ro_cache = True
-    if args.debug is not False:
+    if args.digits:
+        depends.load()
+        updated = False
+        for dep in depends.topological("digits_avl_umap"):
+            if dep not in depends.outputs:
+                depends.classes(dep).run()
+                updated = True
+        if updated:
+            depends.save()
+        visualize(depends.outputs["digits_avl_umap"])
+    elif args.debug is not False:
         depends.load()
         if args.debug:
             depends.classes(args.debug).debug()

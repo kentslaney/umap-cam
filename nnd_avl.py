@@ -340,6 +340,9 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
         rng, total, trees = forest(rng, data, *a, **kw)
         return rng, cls(trees, total=total, data_points=data.shape[0])
 
+class NNDResult(grouping(
+        "NNDResult", ("points", "size"), ("distances", "indices", "flags"))):
+    pass
 
 @partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees"))
 def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
@@ -361,4 +364,5 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
     i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
     # jax.lax.cond(i < iters, lambda: jax.debug.print(
     #         "stopped early after {} iterations", i), lambda: None)
-    return rng, jax.lax.sort(heap, num_keys=2)
+    return rng, NNDResult.tree_unflatten(
+            (), jax.lax.sort(heap[('key', 'secondary', 'flags'),], num_keys=2))

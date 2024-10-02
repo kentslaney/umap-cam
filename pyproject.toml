@@ -12,4 +12,4 @@ version = "0.1"
 dependencies = ["jax[cuda12]"]
 
 [project.optional-dependencies]
-test = ["scikit-learn"]
+test = ["scikit-learn", "matplotlib"]

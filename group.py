@@ -328,7 +328,7 @@ class Named:
             return super().__repr__()
         def arr_repr(arr):
             if not isinstance(arr, jnp.ndarray):
-                return repr(array)
+                return repr(arr)
             if arr.aval is not None and arr.aval.weak_type:
                 dtype_str = f'dtype={arr.dtype.name}, weak_type=True)'
             else:
