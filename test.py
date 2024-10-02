@@ -364,6 +364,37 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
                 n_trees=opt.n_trees)
         return heap
 
+    def test_avl_removals(self):
+        from avl import SingularAVL
+        tree = SingularAVL.tree_unflatten((), (
+            [14.247807, 31.511902, 43.335896, 43.451122, 44.079475, 44.474712,
+             14.247807, 44.079475, 28.495613, 34.655445, 34.899857, 34.971416,
+             36.138622, 42.485290, 43.289722, 44.158806, 44.429718, 35.510563,
+             36.864616, 41.291645, 42.071370, 42.284748, 42.673176, 44.237990,
+             30.886890, 31.701735, 44.429718, 26.115130, 30.886890, 43.197224,
+             43.474130, 43.554560],
+            [  1, 121,  17,  81, 103,  57,   1, 103,  47,  68,  21, 122,  97,
+              16, 162,  59,  53,  11, 158,  76, 107,  14,  69,  24,  87,  90,
+              53,  70,  87, 147, 113, 100],
+            [ 6,  8, -1, 12,  7, -1, -1, -1,  0, 25,  9, -1,  1, 19, 22, 31, 26,
+             -1, -1, 18, -1, -1, -1, -1, -1, -1, -1, -1, 24, -1, -1, 30],
+            [27, 10, -1, 15, -1, -1, -1, -1, 28, -1, 11, 17, 13, 14,  2, 16,  5,
+             -1, -1, 20, 21, -1, 29, -1, -1, -1, -1, -1, -1, -1, -1,  4],
+            [ 2,  4,  1,  6,  2,  1,  1,  1,  3,  2,  3,  2,  5,  4,  3,  4,  2,
+              1,  1,  3,  2,  1,  2,  1,  1,  1,  1,  1,  2,  1,  1,  3],
+            jnp.int32(3), jnp.int32(32), jnp.int32(5)))
+        for i in (26, 15): # set 26, 15 to 43.358967, 18
+            tree = tree.remove(i)
+            tree = tree.at[('key', 'secondary'), i].set((43.358967, 18))
+            tree = tree.insert(i)
+        tree = tree.remove(4)
+        for i in (16,): # set 16, 5 to 42.638012, 43
+            tree = tree.remove(i)
+            tree = tree.at[('key', 'secondary'), i].set((42.638012, 43))
+            tree = tree.insert(i)
+        tree = tree.insert(4)
+        self.assertTrue(tree.acyclic())
+
 class TestHangingIsolation(FlatTest, unittest.TestCase):
     def test_avl_aknn_digits_slice_order0_0_167(self):
         from sklearn.datasets import load_digits
