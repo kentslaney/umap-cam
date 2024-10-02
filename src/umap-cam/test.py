@@ -246,7 +246,8 @@ class Options:
 
 opt = Options()
 file_dir = pathlib.Path(__file__).parent
-depends = Depends(file_dir / "test_cache.npz", *opt.rng)
+project_dir = file_dir / pathlib.os.pardir / pathlib.os.pardir
+depends = Depends(project_dir / "test_cache.npz", *opt.rng)
 file_dir = str(file_dir)
 
 class FlatTest:
@@ -254,7 +255,8 @@ class FlatTest:
     def setUpClass(cls):
         if file_dir not in sys.path:
             sys.path.insert(0, file_dir)
-        super().setUpClass()
+        if hasattr(super(), "setUpClass"):
+            super().setUpClass()
 
 class TestPipelinedUMAP(FlatTest, depends.caching):
     @depends(rng=True)
@@ -392,6 +394,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         from nnd_avl import aknn
         data = load_digits().data
         rng, heap = aknn(15, rng, data)
+        heap.distances.block_until_ready()
         return heap
 
     @depends(rng=True, heap="digits_avl_aknn")
@@ -402,6 +405,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, embed, adj = initialize(rng, data, heap, n_components=2)
         optimizer = AccumulatingOptimizer(verbose=False)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        lo.block_until_ready()
         return lo
 
 class TestCAM16(FlatTest, unittest.TestCase):
@@ -463,16 +467,30 @@ def visualize(embedded):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument("--umap-suite", "-u", action="store_true")
     parser.add_argument("--ro-cache", "-r", action="store_true")
-    parser.add_argument("--debug", "-d", default=False, nargs="?")
     parser.add_argument("--interactive", "-i", action="store_true")
-    parser.add_argument("--digits", action="store_true")
+    parser.add_argument("--perfetto", action="store_true")
+    group = parser.add_mutually_exclusive_group()
+    group.add_argument("--umap-suite", "-u", action="store_true")
+    group.add_argument("--debug", "-d", default=False, nargs="?")
+    group.add_argument("--digits", action="store_true")
+    group.add_argument("--profile", nargs="+")
     args, argv = parser.parse_known_args()
     if args.ro_cache:
         depends.ro_cache = True
-    if args.digits:
+    if args.profile or args.digits or args.debug is not False:
         depends.load()
+        FlatTest.setUpClass()
+    if args.profile:
+        for uniq in args.profile:
+            for dep in depends.topological(uniq)[:-1]:
+                if dep not in depends.outputs:
+                    depends.classes(dep).run()
+            with jax.profiler.trace(
+                    project_dir / "jobs", create_perfetto_link=args.perfetto):
+                depends.classes(uniq).run()
+        depends.save()
+    elif args.digits:
         updated = False
         for dep in depends.topological("digits_avl_umap"):
             if dep not in depends.outputs:
@@ -481,10 +499,8 @@ if __name__ == '__main__':
         if updated:
             depends.save()
         visualize(depends.outputs["digits_avl_umap"])
-    elif args.debug is not False:
-        depends.load()
-        if args.debug:
-            depends.classes(args.debug).debug()
+    elif args.debug:
+        depends.classes(args.debug).debug()
     elif args.umap_suite:
         depends.suite()
     else:
