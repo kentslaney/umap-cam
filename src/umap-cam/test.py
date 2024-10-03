@@ -203,15 +203,19 @@ class Depends:
                 self.save()
         return DependsTearDown
 
-    # BROKEN: the latest versions of Python 3 seem to ignore the order method
-    # https://stackoverflow.com/q/4095319#comment120033036_22317851
     @property
     def loader(self):
         order = self.topological()
+        default = unittest.defaultTestLoader.sortTestMethodsUsing
         class DependsLoader(unittest.TestLoader):
             @staticmethod
             def sortTestMethodsUsing(a, b):
-                a, b = a[len(self.prefix):], b[len(self.prefix):]
+                a, b = (
+                        i[len(self.prefix):] if i.startswith(self.prefix) else i
+                        for i in (a, b))
+                for i in (a, b):
+                    if i not in order:
+                        order.append(i)
                 a, b = order.index(a), order.index(b)
                 return (a > b) - (a < b)
         return DependsLoader()
@@ -388,6 +392,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         tree = tree.remove(16)
         self.assertTrue(tree.acyclic())
 
+class TestDigitsIntegration(FlatTest, depends.caching):
     @depends(rng=True)
     def test_digits_avl_aknn(self, rng):
         from sklearn.datasets import load_digits
@@ -504,7 +509,7 @@ if __name__ == '__main__':
     elif args.umap_suite:
         depends.suite()
     else:
-        unittest.main(argv=sys.argv[:1] + argv)
+        unittest.main(argv=sys.argv[:1] + argv, testLoader=depends.loader)
     if args.interactive:
         for k, v in depends.outputs.items():
             globals()[k] = v
