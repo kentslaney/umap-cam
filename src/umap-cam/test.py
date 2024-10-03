@@ -271,6 +271,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
     def test_rpt(self, rng, data):
         from rpt import forest
         rng, total, trees = forest(rng, data, opt.n_trees, opt.max_candidates)
+        trees.block_until_ready()
         return total, trees
 
     @depends("data", rng=True)
@@ -278,6 +279,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         from nnd import NNDHeap
         heap = NNDHeap(opt.points, opt.k_neighbors)
         heap, rng = heap.randomize(data, rng)
+        heap.distances.block_until_ready()
         return heap
 
     @depends("data", rng=True)
@@ -285,6 +287,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         from nnd_avl import NNDHeap
         heap = NNDHeap(opt.points, opt.k_neighbors)
         heap, rng = heap.randomize(data, rng)
+        heap.distances.block_until_ready()
         return heap
 
     @depends("heap", forest="rpt")
@@ -293,6 +296,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         total, trees = forest
         trees = RPCandidates(trees, total=total)
         heap, count = heap.update(data, trees)
+        heap.distances.block_until_ready()
         return heap
 
     @depends(forest="rpt", heap="heap_avl")
@@ -301,6 +305,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         total, trees = forest
         trees = RPCandidates(trees, total=total, data_points=data.shape[0])
         heap, count = heap.update(data, trees)
+        heap.distances.block_until_ready()
         return heap
 
     @depends(rng=True, heap="rpt_heap")
@@ -308,6 +313,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         for i in range(opt.n_nnd_iter):
             heap, step, rng = heap.build(opt.max_candidates, rng)
             heap, changes = heap.update(data, step)
+        heap.distances.block_until_ready()
         return heap
 
     @depends(rng=True, heap="rpt_heap_avl")
@@ -315,6 +321,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         for i in range(opt.n_nnd_iter):
             heap, step, rng = heap.build(opt.max_candidates, rng)
             heap, changes = heap.update(data, step)
+        heap.distances.block_until_ready()
         return heap
 
     @depends(rng=True, heap="rpt_heap_avl")
@@ -331,6 +338,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
         std = jnp.stack(tuple(map(jnp.std, (lo, hi))))
         delta = 2 * (std[1] - std[0]) / jnp.sum(std)
+        lo.block_until_ready()
         return lo
 
     @depends(rng=True, heap="heap_avl_build")
@@ -339,6 +347,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, embed, adj = initialize(rng, data, heap, n_components=3)
         optimizer = ConstrainedOptimizer(verbose=False, constrained_cols=2)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        lo.block_until_ready()
         return lo
 
     @depends(rng=True, heap="heap_avl_build")
@@ -348,6 +357,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, embed, adj = initialize(rng, data, heap, n_components=4)
         optimizer = CAM16Optimizer(verbose=False)
         rng, lo, hi = optimizer.optimize(rng, embed, adj)
+        lo.block_until_ready()
         return lo
 
     @depends(rng=True)
@@ -368,6 +378,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         rng, heap = aknn(
                 opt.k_neighbors, rng, data, max_candidates=opt.max_candidates,
                 n_trees=opt.n_trees)
+        heap.distances.block_until_ready()
         return heap
 
     def test_avl_removals(self):
@@ -475,6 +486,7 @@ if __name__ == '__main__':
     parser.add_argument("--ro-cache", "-r", action="store_true")
     parser.add_argument("--interactive", "-i", action="store_true")
     parser.add_argument("--perfetto", action="store_true")
+    parser.add_argument("--manual-profile", nargs="?", default=False)
     group = parser.add_mutually_exclusive_group()
     group.add_argument("--umap-suite", "-u", action="store_true")
     group.add_argument("--debug", "-d", default=False, nargs="?")
@@ -483,6 +495,8 @@ if __name__ == '__main__':
     args, argv = parser.parse_known_args()
     if args.ro_cache:
         depends.ro_cache = True
+    if args.manual_profile is not False:
+        jax.profiler.start_server(args.manual_profile or 9999)
     if args.profile or args.digits or args.debug is not False:
         depends.load()
         FlatTest.setUpClass()
