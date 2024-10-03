@@ -506,6 +506,7 @@ if __name__ == '__main__':
         visualize(depends.outputs["digits_avl_umap"])
     elif args.debug:
         depends.classes(args.debug).debug()
+        depends.save()
     elif args.umap_suite:
         depends.suite()
     else:
