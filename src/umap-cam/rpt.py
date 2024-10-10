@@ -56,8 +56,11 @@ def test_bounds():
                 f"{i:02} {i:04b} {rightmostSetBit(i): 2} {rightmostUnsetBit(i)}"
                 + (" {: 4}" * 2).format(*binaryBounds(i, range(100, 116), 16)))
 
-@partial(jax.jit, static_argnames=("goal_leaf_size", "bound", "loops", "warn"))
-def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
+@partial(jax.jit, static_argnames=(
+        "goal_leaf_size", "bound", "loops", "warn", "verbose"))
+def rp_tree(
+        rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True,
+        verbose=False):
     if loops is None:
         loops = math.ceil(math.log(goal_leaf_size / data.shape[0], 0.5))
     splits = jnp.zeros((2 ** loops - 1,), dtype=jnp.int32)
@@ -129,8 +132,12 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
         splits = splits.at[start:end].set(_splits)
         planes = planes.at[start:end].set(_planes)
         order = order[jnp.sum(step, 0) + jnp.arange(data.shape[0])]
+        if verbose:
+            jax.debug.print(f"finished rpt loop {depth} of {loops}")
 
     def warner(randomized, total):
+        if total == 0:
+            return
         at = jnp.concatenate(jnp.where(randomized))
         if total >= 16:
             warnings.warn(f"randomized {total} splits")
@@ -139,10 +146,10 @@ def rp_tree(rng, data, goal_leaf_size=30, bound=0.75, loops=None, warn=True):
                 f"randomized {total} split"
                 f"{'s: indices' if total > 1 else ': index'} "
                 f"{', '.join(map(str, at[:-1]))}{',' if len(at) > 2 else ''}"
-                f"{' and ' if len(at) > 1 else ''}{at[-1]}")
+                f"{' and ' if len(at) > 1 else ''}{"".join(at[-1:])}")
     randomized = jnp.all(jnp.isinf(planes), axis=1)
     total = jnp.sum(randomized)
-    jax.lax.cond(warn & total > 0, lambda: jax.debug.callback(
+    jax.lax.cond(warn & (total > 0), lambda: jax.debug.callback(
         warner, randomized, total), lambda: None)
     return rng, splits, order, planes
 
@@ -165,8 +172,10 @@ def flatten(rng, splits, order, max_leaf_size=30, bound=0.75):
     return rng, candidates.at[idx, offset].set(order), jnp.sum(bins)
 
 @partial(jax.jit, static_argnames=(
-        "n_trees", "max_leaf_size", "bound", "loops"))
-def forest(rng, data, n_trees=None, max_leaf_size=30, bound=0.75, loops=None):
+        "n_trees", "max_leaf_size", "bound", "loops", "verbose"))
+def forest(
+        rng, data, n_trees=None, max_leaf_size=30, bound=0.75, loops=None,
+        verbose=False):
     if n_trees is None:
         n_trees = 5 + int(round((data.shape[0]) ** 0.25))
         n_trees = min(32, n_trees)
@@ -176,13 +185,15 @@ def forest(rng, data, n_trees=None, max_leaf_size=30, bound=0.75, loops=None):
     _, leaves, size = jax.eval_shape(partial(
             flatten, max_leaf_size=max_leaf_size,
             bound=bound), rng, splits, order)
-    max_leaves = leaves.shape[0] * n_trees
-    trees = jnp.full((max_leaves, max_leaf_size), -1)
-    def loop(i, args):
-        rng, total, trees = args
+    def loop(rng):
         rng, splits, order, planes = rp_tree(
-                rng, data, max_leaf_size, bound, loops, warn=False)
+                rng, data, max_leaf_size, bound, loops, verbose, verbose)
         rng, leaves, size = flatten(rng, splits, order, max_leaf_size, bound)
-        trees = jax.lax.dynamic_update_slice_in_dim(trees, leaves, total, 0)
-        return rng, total + size, trees
-    return jax.lax.fori_loop(0, n_trees, loop, (rng, 0, trees))
+        return (leaves, size)
+    rng, *subkeys = jax.random.split(rng, n_trees + 1)
+    trees, totals = jax.vmap(loop)(jnp.stack(subkeys))
+    totals = jnp.cumsum(jnp.concatenate((jnp.zeros((1,), jnp.int32), totals)))
+    flat = jnp.full((n_trees * order.shape[0], max_leaf_size), -1)
+    for i in range(n_trees):
+        flat = jax.lax.dynamic_update_slice_in_dim(flat, trees[i], totals[i], 0)
+    return rng, totals[-1], flat

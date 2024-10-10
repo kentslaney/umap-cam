@@ -344,13 +344,16 @@ class NNDResult(grouping(
         "NNDResult", ("points", "size"), ("distances", "indices", "flags"))):
     pass
 
-@partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees"))
-def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
+@partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees", "verbose"))
+def aknn(
+        k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None,
+        verbose=False):
     max_candidates = min(64, k) if max_candidates is None else max_candidates
     heap = NNDHeap(data.shape[0], k)
     heap, rng = heap.randomize(data, rng)
     if n_trees != 0:
-        rng, trees = RPCandidates.forest(rng, data, n_trees, max_candidates)
+        rng, trees = RPCandidates.forest(
+                rng, data, n_trees, max_candidates, verbose=verbose)
         heap, _ = heap.update(data, trees)
     def cond(args):
         i, broken, _, _ = args
@@ -359,10 +362,14 @@ def aknn(k, rng, data, delta=0.0001, iters=10, max_candidates=32, n_trees=None):
         i, _, heap, rng = args
         heap, step, rng = heap.build(max_candidates, rng)
         heap, changes = heap.update(data, step)
-        # jax.debug.print("finished iteration {} with {} updates", i, changes)
+        if verbose:
+            jax.debug.print("finished iteration {} with {} updates", i, changes)
         return i + 1, changes <= delta * k * data.shape[0], heap, rng
+    if verbose:
+        jax.debug.print("nnd has compiled and is starting iteration 0")
     i, _, heap, rng = jax.lax.while_loop(cond, loop, (0, False, heap, rng))
-    # jax.lax.cond(i < iters, lambda: jax.debug.print(
-    #         "stopped early after {} iterations", i), lambda: None)
+    if verbose:
+        jax.lax.cond(i < iters, lambda: jax.debug.print(
+                "stopped early after {} iterations", i), lambda: None)
     return rng, NNDResult.tree_unflatten(
             (), jax.lax.sort(heap[('key', 'secondary', 'flags'),], num_keys=2))
