@@ -185,6 +185,18 @@ def forest(
     _, leaves, size = jax.eval_shape(partial(
             flatten, max_leaf_size=max_leaf_size,
             bound=bound), rng, splits, order)
+
+    max_leaves = leaves.shape[0] * n_trees
+    trees = jnp.full((max_leaves, max_leaf_size), -1)
+    def loop(i, args):
+        rng, total, trees = args
+        rng, splits, order, planes = rp_tree(
+                rng, data, max_leaf_size, bound, loops, verbose, verbose)
+        rng, leaves, size = flatten(rng, splits, order, max_leaf_size, bound)
+        trees = jax.lax.dynamic_update_slice_in_dim(trees, leaves, total, 0)
+        return rng, total + size, trees
+    return jax.lax.fori_loop(0, n_trees, loop, (rng, 0, trees))
+
     def loop(rng):
         rng, splits, order, planes = rp_tree(
                 rng, data, max_leaf_size, bound, loops, verbose, verbose)
