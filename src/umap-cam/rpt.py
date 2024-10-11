@@ -149,8 +149,9 @@ def rp_tree(
                 f"{' and ' if len(at) > 1 else ''}{"".join(at[-1:])}")
     randomized = jnp.all(jnp.isinf(planes), axis=1)
     total = jnp.sum(randomized)
-    jax.lax.cond(warn & (total > 0), lambda: jax.debug.callback(
-        warner, randomized, total), lambda: None)
+    if warn:
+        jax.lax.cond(total > 0, lambda: jax.debug.callback(
+            warner, randomized, total), lambda: None)
     return rng, splits, order, planes
 
 @partial(jax.jit, static_argnames=("max_leaf_size", "bound"))

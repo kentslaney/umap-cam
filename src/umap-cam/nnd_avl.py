@@ -297,7 +297,7 @@ class Candidates(groupaux("data_points")):
         return Links.tree_unflatten((), res[::-1])
 
     # requires some re-computing, but low memory and high cache coherence
-    def bound(self, idx0, idx1, data, heap, prune=True, dist=euclidean):
+    def bound(self, idx0, idx1, data, heap, prune=False, dist=euclidean):
         tree = heap.indirect[:, 0].__class__
         args = len(heap.tree_flatten()[0])
 
@@ -322,7 +322,7 @@ class Candidates(groupaux("data_points")):
         return row_row(self[idx0], self[idx1], data)
 
     @partial(jax.jit, static_argnames=('prune', 'dist'))
-    def bounds(self, data, heap, prune=True, dist=euclidean):
+    def bounds(self, data, heap, prune=False, dist=euclidean):
         res = tuple(self.bound(
                 -1, i, data, heap, prune, dist) for i in range(len(self)))
         return Bounds.tree_unflatten((), tuple(map(jnp.stack, zip(*res))))
