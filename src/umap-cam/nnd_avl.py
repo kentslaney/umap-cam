@@ -78,17 +78,27 @@ class NNDHeap(
 
     @partial(jax.jit, static_argnames=("dist",))
     def randomize(self, data, rng, dist=euclidean):
-        def outer(rng, i, existing, flags):
-            idx = jax.random.choice(
-                    rng, self.shape[1] - 1, (self.shape[2],), False)
+        def prefix_offset(idx, i):
+            masked = jnp.where(
+                    (jnp.arange(self.shape[2]) < i)[:, None],
+                    idx, self.shape[1])
+            idx = idx.at[i].add(jnp.sum(idx[i] >= masked, 0))
+            return idx, None
+        rng = jax.random.split(rng, self.shape[2] + 1)
+        idx = jax.vmap(
+                lambda rng, x: jax.random.randint(
+                    rng, (self.shape[1],), 0, self.shape[1] - x - 1)
+                )(rng[1:], jnp.arange(self.shape[2]))
+        idx, _ = jax.lax.scan(prefix_offset, idx, jnp.arange(self.shape[2]))
+
+        def outer(idx, i, existing, flags):
             idx = jnp.where(existing == -1, idx + (idx >= i), existing)
             d = jax.vmap(dist, (0, None))(data[idx], data[i])
             _, flags = jax.lax.sort_key_val(d, existing == -1)
             d, idx = jax.lax.sort_key_val(d, idx)
             return d[::-1], idx[::-1], flags
-        rng = jax.random.split(rng, self.shape[1] + 1)
         res = self.at[('distances', 'indices', 'flags'),].set(jax.vmap(outer)(
-                rng[1:], jnp.arange(self.shape[1]), self.indices, self.flags))
+                idx.T, jnp.arange(self.shape[1]), self.indices, self.flags))
         return res.remap().batched(), rng[0]
 
     def apply(self, update):

@@ -288,6 +288,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         heap = NNDHeap(opt.points, opt.k_neighbors)
         heap, rng = heap.randomize(data, rng)
         heap.distances.block_until_ready()
+        self.assertTrue(jnp.all(heap.indices < heap.spec.points))
         return heap
 
     @depends("heap", forest="rpt")
