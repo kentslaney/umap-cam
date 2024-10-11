@@ -425,6 +425,19 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         lo.block_until_ready()
         return lo
 
+    @depends(rng=True)
+    def test_digits_rpt(self, rng):
+        from sklearn.datasets import load_digits
+        from nnd_avl import RPCandidates, NNDHeap
+        data = load_digits().data
+        heap = NNDHeap(data.shape[0], opt.k_neighbors)
+        heap, rng = heap.randomize(data, rng)
+        rng, trees = RPCandidates.forest(
+                rng, data, opt.n_trees, opt.max_candidates, verbose=True)
+        heap, _ = heap.update(data, trees)
+        heap.distances.block_until_ready()
+        return total, trees
+
 class TestCAM16(FlatTest, unittest.TestCase):
     @staticmethod
     def domain_bounds(lo=0, hi=1, points=100):
