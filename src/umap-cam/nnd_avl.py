@@ -119,16 +119,17 @@ class NNDHeap(
 
 @jax.tree_util.register_pytree_node_class
 class Filtered(groupaux(dist=euclidean), marginalized("trees", ceil=-1), AVLs):
-    @jax.jit
+    @partial(jax.jit, static_argnames=("side",))
     def pairs(self, coords, step, data, side):
         def body(el, ref):
             skip = (ref == -1) | (el == -1) | (el == ref)
             return jnp.where(skip, jnp.inf, self.dist(data[el], data[ref]))
-        (row, col), ref = coords, jnp.stack(step)[(side, *coords)]
+        (row, col), ref = coords, step[(side, *coords)]
         distances = jax.vmap(body, (0, None))(step[-1, row], ref)
         indices = jnp.where(jnp.isfinite(distances), step[-1, row], -1)
         return jax.lax.sort((distances, indices), num_keys=2)
 
+    @partial(jax.jit, static_argnames=("side",))
     def filter(self, heap, step, bound, coords, links, data, side):
         def push(out, ceil, *value):
             sign = out.sign(*value, out.max)
@@ -178,11 +179,12 @@ class Links(
         ):
     @partial(jax.jit, static_argnames=("dist",))
     def rebuild(self, step, bound, heap, data, dist=euclidean):
-        idx = jnp.arange(step.shape[0])
-        return jax.lax.scan(
-                bound.indirect[:, 0].following, (
-                    Filtered(heap.spec.points, self.spec.size, dist=dist),
-                    heap, step, data), (bound, self, idx))[0][0]
+        carry = (
+                Filtered(heap.spec.points, self.spec.size, dist=dist),
+                heap, step, data)
+        for idx in range(self.shape[0]):
+            carry = bound.indirect[:, idx].following(carry, self, idx)
+        return carry[0]
 
     def follow(self, tail):
         # each point sampled a maximum of once per node
@@ -280,14 +282,14 @@ class Links(
 @jax.tree_util.register_pytree_node_class
 class Bounds(grouping(
         "Bounds", ("splits", "points", "size"), ("distances", "indices"))):
-    def following(self, carry, args):
-        bounds, links, side = args
-        bounds = self.tree_unflatten(*bounds.tree_flatten()[::-1])
+    @partial(jax.jit, static_argnames=("side",))
+    def following(self, carry, links, side):
+        links = links[:, side]
         out, heap, step, data = carry
         out = out.remap((0, 0, None, None, None)).alongside(
-                heap, step, bounds, in_axes=(0, None, None)).filter(
+                heap, step, self, in_axes=(0, None, None)).filter(
                     links.tail, links.head, data, side)
-        return (out, heap, step, data), None
+        return out, heap, step, data
 
 class Candidates(groupaux("data_points")):
     # could be built iteratively and stored
