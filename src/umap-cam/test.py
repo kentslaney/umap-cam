@@ -405,6 +405,15 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         self.assertTrue(tree.acyclic())
 
 class TestDigitsIntegration(FlatTest, depends.caching):
+    @depends()
+    def test_digits_polyfill_aknn(self):
+        from sklearn.datasets import load_digits
+        from nnd_polyfill import aknn
+        data = load_digits().data
+        _, heap = aknn(15, None, data)
+        heap.distances.block_until_ready()
+        return heap
+
     @depends(rng=True)
     def test_digits_avl_aknn(self, rng):
         from sklearn.datasets import load_digits

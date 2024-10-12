@@ -15,3 +15,4 @@ readme = "README.md"
 [project.optional-dependencies]
 test = ["scikit-learn", "matplotlib"]
 cuda12 = ["jax[cuda12]"]
+polyfill = ["pynndescent"]
