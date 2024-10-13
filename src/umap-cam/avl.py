@@ -224,9 +224,9 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
 
             balance = t.balance[root]
             balance = jnp.where(balance > 1, 1, jnp.where(balance < -1, -1, 0))
-            side = jnp.where(balance == 0, -1,
-                jnp.where(balance == 1, t.left[root], t.right[root]))
-            double = jnp.abs(balance - t.balance[side]) == 2
+            side = jnp.where(balance == 0, 0,
+                t.balance[jnp.where(balance == 1, t.left[root], t.right[root])])
+            double = jnp.abs(balance - side) == 2
 
             t = t.pre_balance(double, root, balance)
             return (path,) + t.re_balance(root, balance)
