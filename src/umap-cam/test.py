@@ -232,7 +232,7 @@ class Options:
             "points", "k_neighbors", "max_candidates", "ndim", "n_trees",
             "n_nnd_iter")
     names = ("seed",) + hashing
-    points = 32
+    points = 112
     k_neighbors = 15
     max_candidates = 7
     ndim = 8
@@ -378,7 +378,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         from nnd_avl import aknn
         rng, heap = aknn(
                 opt.k_neighbors, rng, data, max_candidates=opt.max_candidates,
-                n_trees=opt.n_trees)
+                n_trees=opt.n_trees, verbose=True)
         heap.distances.block_until_ready()
         return heap
 
@@ -419,7 +419,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn
         data = load_digits().data
-        rng, heap = aknn(15, rng, data)
+        rng, heap = aknn(15, rng, data, verbose=True)
         heap.distances.block_until_ready()
         return heap
 
