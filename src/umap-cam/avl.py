@@ -31,6 +31,15 @@ class SearchPath(outgroup(height=0), grouping(
     def start(self):
         return self.shape[1] - self.height
 
+    @classmethod
+    def root(cls, parent):
+        def body():
+            res.height += 1
+            res.path[res.start] = parent.root
+            return res.at["path", res.start].set(parent.root)
+        res = cls(parent.bound)
+        return jax.lax.cond(parent.root == -1, lambda: res, body)
+
 class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         ("size",), ("key", "secondary", "left", "right", "height"), (
             jnp.float32, jnp.int32, jnp.int32(-1), jnp.int32(-1),
@@ -440,20 +449,34 @@ class MaxAVL(
             return self.key[self.max]
 
 class PathSeq:
-    def __init__(self, parent, node=-1, path=None, start=1):
-        self.parent, self.start = parent, start
-        self.path = parent.extrema(start)
+    def __init__(self, parent, node=-1, path=None, seq=(1, 0, -1)):
+        self.parent, self.seq = parent, seq
+        if seq[0] == 0:
+            PathSeq.root(parent)
+        else:
+            self.path = parent.extrema(start)
 
     @jax.jit
     def next(self):
-        direction = "left" if self.start == -1 else "right"
+        direction = (
+                jnp.arange(self.parent.spec.size),
+                self.parent.right, self.parent.left)
+        def to(level):
+            return jnp.where(
+                    self.path.sign[level] == seq[0], seq[1],
+                    jnp.where(self.path.sign[level] == seq[1], seq[2], 0))
         def hasnt_left(level):
-            nxt = getattr(self.parent, direction)
             return (
-                    (level < self.path.spec.size) &
-                    (self.path.sign[level] != self.start) &
-                    ~((self.path.sign[level] == 0) & (
-                        nxt[self.path.path[level]] != -1)))
+                    (level < self.path.spec.size) & ( # not oob
+                        (self.path.sign[level] == self.seq[-1]) | # out of dirs
+                        # next direction has an empty root
+                        ((direction[to(level)][self.path.path[level]] == -1) & (
+                            # next direction is last
+                            (self.path.sign[level] == self.seq[1]) | (
+                                # next directions are all children
+                                (self.seq[0] == 0) &
+                                # the last direction is also childless
+                                (direction[seq[2]] == -1))))))
         level = jax.lax.while_loop(
                 hasnt_left, lambda level: level + 1, self.path.start)
         # if level is 0 stop; else set child to 1 or else 0
@@ -470,17 +493,22 @@ class PathSeq:
                             level - 1, path.at[:, level - 1].set((node, 1))))
             return f
         mov = lambda a: (a[0] >= 0) & (a[1].sign[a[0]] != 0)
+        def change():
+            nonlocal level
+            nxt = to(level)
+            path = self.path.at['sign', level].set(nxt)
+            path = jax.lax.cond(nxt != 0, down, lambda: path)
+            return self.__class__(self.parent, path=path, seq=self.seq)
         def down():
             nonlocal level
-            path = self.path.at['sign', level].add(-self.start)
             level, path = jax.lax.cond(
                     mov((level, path)), step(-self.start),
                     lambda a: (level, path), (level, path))
             level, path = jax.lax.while_loop(
                     mov, step(self.start), (level, path))
             path.height = path.spec.size - level
-            return self.__class__(self.parent, path=path, start=start)
-        return jax.lax.cond(level >= self.path.spec.size, lambda: self, down)
+            return path
+        return jax.lax.cond(level >= self.path.spec.size, lambda: self, change)
 
     @property
     def value(self):
@@ -495,22 +523,18 @@ class PathSeq:
 
 @jax.tree_util.register_pytree_node_class
 class Predecessors(PathSeq):
-    def __init__(self, parent, node=-1, path=None, start=1):
-        assert start == 1
-        return super().__init__(parent, node, path, start)
+    def __init__(self, parent, node=-1, path=None, seq=None):
+        return super().__init__(parent, node, path, (1, 0, -1))
 
 @jax.tree_util.register_pytree_node_class
 class Successors(PathSeq):
-    def __init__(self, parent, node=-1, path=None, start=-1):
-        assert start == -1
-        return super().__init__(parent, node, path, start)
+    def __init__(self, parent, node=-1, path=None, seq=None):
+        return super().__init__(parent, node, path, (-1, 0, 1))
 
-class Traversal:
-    def __init__(self, parent, path):
-        self.parent, self.path = parent, path)
-
-    def next(self):
-        pass
+@jax.tree_util.register_pytree_node_class
+class Traversal(PathSeq):
+    def __init__(self, parent, node=-1, path=None, seq=None):
+        return super().__init__(parent, node, path, (0, -1, 1))
 
 @jax.tree_util.register_pytree_node_class
 class SingularAVL(MaxAVL, grouping(
