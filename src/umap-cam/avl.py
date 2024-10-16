@@ -265,41 +265,59 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
         jax.debug.print(
                 "{}\n{}\n{}", jnp.arange(self.shape[1]), self.left, self.right)
 
-    tsv = lambda t, x: "\t".join(map(str, (
-            x, f"{t.key[x]:.5f}", t.secondary[x], t.height[x])))
-    def tsv_table(self, init):
-        names = ["index", "primary", "secondary", "height"]
-        res = [i.split("\t") for i in init.split("\n")]
-        res = [i + [""] * max(len(names) - len(i), 0) for i in res]
-        res = [names] + res
-        size = list(map(max, zip(*((len(j) for j in i) for i in res))))
-        return "\n".join((" " * 4).join(
-                getattr(i[j], "ljust" if j == 0 else "rjust")(size[j])
-                for j in range(len(i))) for i in res)
+    def walk(self, sep="    "):
+        def unroll(args):
+            it, sign, value, height, i, _ = args
+            sign = sign.at[i].set(it.path.sign)
+            value = value.at[i].set(it.value)
+            height = height.at[i].set(it.path.height)
+            return it.next(), sign, value, height, i + 1, it.value
+        sign = jnp.zeros((self.spec.size, self.bound), dtype=jnp.int32)
+        value = jnp.full((self.spec.size,), -1).at[0].set(self.root)
+        height = jnp.zeros((self.spec.size,), dtype=jnp.int32).at[0].add(
+                jnp.where(self.root == -1, 0, 1))
+        _, sign, value, height, total, last = jax.lax.while_loop(
+                lambda a: a[-1] != a[0].value, unroll,
+                (Traversal(self).next(), sign, value, height, 1, self.root))
+        mt = height[1:] <= height[:-1]
+        pad = -(-jnp.log(self.spec.size) // jnp.log(10)) + jnp.max(height)
+        def show(idx):
+            res = []
+            for i in idx:
+                cell = [self.key[i], self.secondary[i]]
+                fmt = ["{:0.5f}", "{}"]
+                res.append([i.format(j) for i, j in zip(fmt, cell)])
+            pad = tuple(map(max, zip(*(map(len, i) for i in res))))
+            return [sep.join(k.ljust(j) for j, k in zip(pad, i)) for i in res]
+        def body(sign, value, height, mt, total, pad):
+            cells = show(value[:total])
+            for i in range(total):
+                for j in range(height[i] - 2):
+                    print(("", Chars.MT, Chars.BAR)[sign[i, j]], end="")
+                if height[i] > 1:
+                    print(("", Chars.ELL, Chars.BAR_DASH)[
+                            sign[i, height[i] - 2]], end="")
+                print((Chars.DASH_BAR, Chars.DASH)[int(mt[i])], end="")
+                print(value[i], end="")
+                print(" " * int(pad - math.ceil(
+                        math.log10(max(2, value[i]))) - height[i]), end=sep)
+                print(cells[i])
+        jax.debug.callback(body, sign[:, ::-1], value, height, mt, total, pad)
 
-    def walk(self, value=None, hide=False):
-        if hasattr(self.spec, "trees"):
-            return "\n".join(
-                self.indirect[:, i].walk(self.indirect[:, i].tsv, hide, root)
-                for i in range(self.spec.trees))
-        q = jnp.full((self.spec.size,), -1)
-        q[-1] = self.root if root is None else root
-        nxt = self.spec.size - 1
-        def body(args):
-            nxt, q, res = args
-            root = q[nxt]
-        nxt, q, res = jax.lax.while_loop(
-                lambda a: a[0] < self.spec.size, body, (nxt, q, ""))
-        return self.tsv_table(res) if start else res
-
-    def __repr__(self):
+    def show(self):
         edgeitems = jnp.get_printoptions()['edgeitems']
-        if hasattr(self.spec, "trees") and self.spec.trees > 2 * edgeitems:
-            top = self.indirect[:, :edgeitems].walk()
-            mid = f"\n...\n({self.spec.trees - 2 * edgeitems} more)\n...\n"
-            bottom = self.indirect[:, -edgeitems:].walk()
-            return self.tsv_table(top + mid + bottom)
-        return self.tsv_table(self.walk())
+        if hasattr(self.spec, "trees"):
+            if self.spec.trees > 2 * edgeitems:
+                for i in range(edgeitems):
+                    self.indirect[:, i].walk()
+                hidden = self.spec.trees - 2 * edgeitems
+                jax.debug.print("\n...\n({} more)\n...\n", hidden)
+                for i in range(edgeitems):
+                    self.indirect[:, -i].walk()
+            else:
+                for i in range(self.spec.trees):
+                    self.indirect[:, i].walk()
+        return self.walk()
 
     def acyclic(self):
         q = jnp.full(self.spec.size, -1).at[0].set(self.root)
