@@ -378,7 +378,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         from nnd_avl import aknn
         rng, heap = aknn(
                 opt.k_neighbors, rng, data, max_candidates=opt.max_candidates,
-                n_trees=opt.n_trees, verbose=True)
+                n_trees=opt.n_trees)
         heap.distances.block_until_ready()
         return heap
 
@@ -419,7 +419,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn
         data = load_digits().data
-        rng, heap = aknn(15, rng, data, verbose=True)
+        rng, heap = aknn(15, rng, data)
         heap.distances.block_until_ready()
         return heap
 
@@ -442,7 +442,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         heap = NNDHeap(data.shape[0], opt.k_neighbors)
         heap, rng = heap.randomize(data, rng)
         rng, trees = RPCandidates.forest(
-                rng, data, opt.n_trees, opt.max_candidates, verbose=True)
+                rng, data, opt.n_trees, opt.max_candidates)
         heap, _ = heap.update(data, trees)
         heap.distances.block_until_ready()
         return total, trees
