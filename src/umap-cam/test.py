@@ -232,7 +232,7 @@ class Options:
             "points", "k_neighbors", "max_candidates", "ndim", "n_trees",
             "n_nnd_iter")
     names = ("seed",) + hashing
-    points = 112
+    points = 32
     k_neighbors = 15
     max_candidates = 7
     ndim = 8
