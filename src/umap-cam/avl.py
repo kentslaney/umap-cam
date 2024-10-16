@@ -317,7 +317,8 @@ class AVLsInterface(marginalized("trees", root=jnp.int32(-1)), interface(
             else:
                 for i in range(self.spec.trees):
                     self.indirect[:, i].walk()
-        return self.walk()
+        else:
+            return self.walk()
 
     def acyclic(self):
         q = jnp.full(self.spec.size, -1).at[0].set(self.root)
