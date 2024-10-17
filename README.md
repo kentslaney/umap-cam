@@ -61,6 +61,4 @@ Status: INTERNAL: CUDA error: : CUDA_ERROR_LAUNCH_FAILED: unspecified launch fai
     @     0x61d9ab9f2045  _start
 zsh: IOT instruction (core dumped)  python src/umap-cam/test.py --manual-profile -rd digits_avl_aknn
 ```
-That being said, I suspect it starts as a bug in this repo, so...
-### TODO
-- differentiate aknn from heap_avl_build
+That being said, I suspect it starts as a bug in this repo.

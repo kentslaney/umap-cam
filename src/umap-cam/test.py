@@ -248,7 +248,7 @@ class Options:
             "points", "k_neighbors", "max_candidates", "ndim", "n_trees",
             "n_nnd_iter")
     names = ("seed",) + hashing
-    points = 112
+    points = 32
     k_neighbors = 15
     max_candidates = 7
     ndim = 8
@@ -421,7 +421,7 @@ class TestPipelinedUMAP(FlatTest, depends.caching):
         self.assertTrue(tree.acyclic())
 
 class TestDigitsIntegration(FlatTest, depends.caching):
-    # @depends()
+    @depends()
     def test_digits_polyfill_aknn(self):
         from sklearn.datasets import load_digits
         from nnd_polyfill import aknn
@@ -430,7 +430,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         heap.distances.block_until_ready()
         return heap
 
-    # @depends(rng=True)
+    @depends(rng=True)
     def test_digits_avl_aknn(self, rng):
         from sklearn.datasets import load_digits
         from nnd_avl import aknn
@@ -439,7 +439,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         heap.distances.block_until_ready()
         return heap
 
-    # @depends(rng=True, heap="digits_avl_aknn")
+    @depends(rng=True, heap="digits_avl_aknn")
     def test_digits_avl_umap(self, rng, heap):
         from sklearn.datasets import load_digits
         from umap import initialize, AccumulatingOptimizer
@@ -450,7 +450,7 @@ class TestDigitsIntegration(FlatTest, depends.caching):
         lo.block_until_ready()
         return lo
 
-    # @depends(rng=True)
+    @depends(rng=True)
     def test_digits_rpt(self, rng):
         from sklearn.datasets import load_digits
         from nnd_avl import RPCandidates, NNDHeap
