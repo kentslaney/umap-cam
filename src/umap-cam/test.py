@@ -227,12 +227,28 @@ class Depends:
             suite.addTest(self.classes(i))
         unittest.TextTestRunner().run(suite)
 
+    def as_needed(self, names):
+        updated = False
+        for dep in names:
+            if dep not in depends.outputs:
+                depends.classes(dep).run()
+                updated = True
+            elif dep not in self.validated:
+                _, seed = self.rng(dep)
+                if self.cache_rng.get(dep, None) == seed:
+                    self.validated.add(dep)
+                else:
+                    depends.classes(dep).run()
+                    updated = True
+        if updated:
+            depends.save()
+
 class Options:
     hashing = (
             "points", "k_neighbors", "max_candidates", "ndim", "n_trees",
             "n_nnd_iter")
     names = ("seed",) + hashing
-    points = 32
+    points = 112
     k_neighbors = 15
     max_candidates = 7
     ndim = 8
@@ -533,15 +549,10 @@ if __name__ == '__main__':
                 depends.classes(uniq).run()
         depends.save()
     elif args.digits:
-        updated = False
-        for dep in depends.topological("digits_avl_umap"):
-            if dep not in depends.outputs:
-                depends.classes(dep).run()
-                updated = True
-        if updated:
-            depends.save()
+        depends.as_needed(depends.topological("digits_avl_umap"))
         visualize(depends.outputs["digits_avl_umap"])
     elif args.debug:
+        depends.as_needed(depends.topological(args.debug)[:-1])
         depends.classes(args.debug).debug()
         depends.save()
     elif args.umap_suite:

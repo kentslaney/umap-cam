@@ -63,5 +63,4 @@ zsh: IOT instruction (core dumped)  python src/umap-cam/test.py --manual-profile
 ```
 That being said, I suspect it starts as a bug in this repo, so...
 ### TODO
-- build flipped fails changes != 0 despite no rp trees
-- updating rpt candidates hangs
+- differentiate aknn from heap_avl_build
