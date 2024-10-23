@@ -83,6 +83,7 @@ def rp_tree(
                 count = args[0]
                 return (count < (1 - bound) * size) | (count > bound * size)
             def degenerate(count, mask, rng, normal, boundary):
+                # TODO: this needs to be within bound too
                 rng, subkey = jax.random.split(rng)
                 mask = jax.random.bernoulli(subkey, shape=(
                     largest_possible,))
@@ -117,7 +118,7 @@ def rp_tree(
             return step, _splits, planes
         return jax.lax.cond(
                 size > goal_leaf_size, partition,
-                lambda rng, step, planes: (step , -1, planes), rng,
+                lambda rng, step, planes: (step, -1, planes), rng,
                 jnp.zeros(data.shape[0], jnp.int32),
                 jnp.zeros(data.shape[1] + 1))
 

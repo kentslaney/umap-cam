@@ -541,9 +541,7 @@ if __name__ == '__main__':
         FlatTest.setUpClass()
     if args.profile:
         for uniq in args.profile:
-            for dep in depends.topological(uniq)[:-1]:
-                if dep not in depends.outputs:
-                    depends.classes(dep).run()
+            depends.as_needed(depends.topological(uniq)[:-1])
             with jax.profiler.trace(
                     project_dir / "jobs", create_perfetto_link=args.perfetto):
                 depends.classes(uniq).run()
