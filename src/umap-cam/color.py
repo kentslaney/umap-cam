@@ -233,7 +233,7 @@ class CAM16Optimizer(ConstrainedOptimizer):
     def dist(self, *args):
         res = self.extrema.rescale(jnp.stack(args))
         res = jnp.stack([jnp.stack([i[j] for j in self.cols]) for i in args])
-        others = jnp.stack([
+        others = jnp.zeros((len(args), 0)) if not self.spacial else jnp.stack([
                 jnp.stack([i[j] for j in self.spacial]) for i in args])
         res = self.vc.delta(*self.vc.broadcast(res))
         ndim_ratio = jnp.sqrt(len(self.spacial) / max(1, len(self.cols)))

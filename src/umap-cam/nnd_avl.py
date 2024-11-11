@@ -352,8 +352,10 @@ class RPCandidates(groupaux("total"), Candidates, grouping(
         rng, total, trees = forest(rng, data, *a, **kw)
         return rng, cls(trees, total=total, data_points=data.shape[0])
 
+@jax.tree_util.register_pytree_node_class
 class NNDResult(grouping(
-        "NNDResult", ("points", "size"), ("distances", "indices", "flags"))):
+        "NNDResult", ("points", "size"), ("distances", "indices", "flags"),
+        (jnp.float32(jnp.inf), jnp.int32(-1), jnp.uint8(0)))):
     pass
 
 @partial(jax.jit, static_argnames=("k", "max_candidates", "n_trees", "verbose"))
